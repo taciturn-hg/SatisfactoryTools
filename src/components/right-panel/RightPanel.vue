@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { useDataStore } from '@/stores/dataStore'
 import ItemDetail from '@/components/right-panel/ItemDetail.vue'
 import PlanParams from '@/components/right-panel/PlanParams.vue'
 import PlanActions from '@/components/right-panel/PlanActions.vue'
+
+const dataStore = useDataStore()
 
 const activeTab = ref<'output' | 'input' | 'config'>('output')
 
@@ -20,32 +23,24 @@ function resetList() {
   inputItems.value = []
 }
 
-const allItems = [
-  { value: 'iron_plate', label: '铁板' },
-  { value: 'iron_rod', label: '铁棒' },
-  { value: 'screw', label: '螺丝' },
-  { value: 'cable', label: '电缆' },
-  { value: 'copper_plate', label: '铜板' },
-  { value: 'wire', label: '铜线' },
-  { value: 'reinforced_plate', label: '强化铁板' },
-  { value: 'concrete', label: '混凝土' },
-  { value: 'steel_pipe', label: '钢管' },
-  { value: 'steel_beam', label: '钢梁' },
-  { value: 'rotor', label: '转子' },
-  { value: 'stator', label: '定子' },
-  { value: 'motor', label: '电动机' },
-  { value: 'frame', label: '框架' },
-  { value: 'heavy_frame', label: '重型框架' },
-  { value: 'computer', label: '计算机' },
-  { value: 'circuit_board', label: '电路板' },
-  { value: 'rubber', label: '橡胶' },
-  { value: 'plastic', label: '塑料' },
-  { value: 'fuel', label: '燃油' },
-]
+/** 从 dataStore 获取所有物品，转为 a-select 所需格式（复用 dataStore.allItems 的排序） */
+const allItems = computed(() => {
+  if (!dataStore.isLoaded) return []
+  return dataStore.allItems.map((item) => ({
+    value: item.className,
+    label: item.displayName,
+  }))
+})
+
+const itemLabelMap = computed(() => {
+  const map = new Map<string, string>()
+  for (const item of allItems.value) {
+    map.set(item.value, item.label)
+  }
+  return map
+})
 
 const selectedItem = ref<string | undefined>(undefined)
-
-const itemLabelMap = new Map(allItems.map(i => [i.value, i.label]))
 
 const currentList = computed(() =>
   activeTab.value === 'output' ? outputItems.value : inputItems.value
@@ -65,9 +60,8 @@ function addItem() {
   selectedItem.value = undefined
 }
 
-// 移除已选中的物品使下拉框不显示已添加的选项
 const availableItems = computed(() =>
-  allItems.filter(item => !currentList.value.includes(item.value))
+  allItems.value.filter((item) => !currentList.value.includes(item.value))
 )
 </script>
 
@@ -79,7 +73,14 @@ const availableItems = computed(() =>
       <button class="tab-item" :class="{ active: activeTab === 'config' }" @click="activeTab = 'config'">配置</button>
     </div>
 
-    <template v-if="activeTab === 'output'">
+    <div v-if="!dataStore.isLoaded" class="panel-content">
+      <div v-if="dataStore.loadError" class="item-list-error">
+        数据加载失败：{{ dataStore.loadError }}
+      </div>
+      <div v-else class="item-list-placeholder">数据加载中...</div>
+    </div>
+
+    <template v-else-if="activeTab === 'output'">
       <div class="panel-top">
         <div class="search-add-row">
           <a-select
@@ -108,7 +109,7 @@ const availableItems = computed(() =>
       </div>
     </template>
 
-    <template v-if="activeTab === 'input'">
+    <template v-else-if="activeTab === 'input'">
       <div class="panel-top">
         <div class="search-add-row">
           <a-select
@@ -137,7 +138,7 @@ const availableItems = computed(() =>
       </div>
     </template>
 
-    <template v-if="activeTab === 'config'">
+    <template v-else-if="activeTab === 'config'">
       <div class="panel-content config-content">
         <PlanParams />
       </div>
@@ -227,11 +228,17 @@ const availableItems = computed(() =>
   color: #fff;
 }
 
-.item-list-placeholder {
-  padding: 24px 0;
+.item-list-placeholder,
+.item-list-error {
+  padding: 24px 16px;
   text-align: center;
-  color: var(--text-muted);
   font-size: 13px;
+}
+.item-list-placeholder {
+  color: var(--text-muted);
+}
+.item-list-error {
+  color: var(--color-error);
 }
 .item-list {
   padding: 8px 0;

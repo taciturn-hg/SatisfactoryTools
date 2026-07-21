@@ -149,8 +149,8 @@ function parseUEProducedIn(text: string): string[] {
       // 简单路径: Build_ConstructorMk1（无.） → 直接取
       const dotParts = lastSegment.split('.')
       const name = dotParts.length >= 2 ? dotParts[dotParts.length - 1]! : dotParts[0]!
-      const cleanName = name.replace(/_C$/, '')
-      if (cleanName) results.push(cleanName)
+      // 补回 _C 后缀以匹配 buildings Map 的 key（buildings 以 className 原始值索引）
+      if (name) results.push(name)
     }
   }
 
@@ -476,11 +476,12 @@ export function parseGameData(rawJson: unknown[]): DataIndex {
 /**
  * 从指定 URL 加载 zh-Hans.json，解析为 DataIndex。
  *
- * @param url JSON 文件路径，默认 '/data/zh-Hans.json'（文件应放在 public/data/ 下）
+ * @param url JSON 文件路径，默认使用 Vite 资产引用指向 src/data/zh-Hans.json
  * @returns 解析完成的 DataIndex
  */
-export async function loadAndParseGameData(url = '/data/zh-Hans.json'): Promise<DataIndex> {
-  const response = await fetch(url)
+export async function loadAndParseGameData(url?: string): Promise<DataIndex> {
+  const resolvedUrl = url ?? new URL('../data/zh-Hans.json', import.meta.url).href
+  const response = await fetch(resolvedUrl)
 
   if (!response.ok) {
     throw new Error(`加载游戏数据失败: HTTP ${response.status} ${response.statusText}`)

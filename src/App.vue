@@ -1,6 +1,14 @@
 <script setup lang="ts">
+import { onMounted } from 'vue'
 import { RouterView } from 'vue-router'
 import AppHeader from '@/components/common/AppHeader.vue'
+import { useDataStore } from '@/stores/dataStore'
+
+const dataStore = useDataStore()
+
+onMounted(() => {
+  dataStore.loadData()
+})
 </script>
 
 <template>

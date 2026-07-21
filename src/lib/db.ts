@@ -125,6 +125,18 @@ const CACHE_VERSION = 1
 const CACHE_META_KEY = 'SatisfactoryTools_cache_version'
 
 /**
+ * 按 className 去重（同一个配方可能被多个产出物品索引，产生重复 className）
+ */
+function dedupByClass<T extends { className: string }>(items: T[]): T[] {
+  const seen = new Set<string>()
+  return items.filter((item) => {
+    if (seen.has(item.className)) return false
+    seen.add(item.className)
+    return true
+  })
+}
+
+/**
  * 将 DataIndex 写入 IndexedDB。
  *
  * Map 不能直接序列化，分两步：
@@ -142,10 +154,10 @@ export async function cacheData(index: DataIndex): Promise<void> {
     await db.buildings.clear()
     await db.generators.clear()
 
-    // 批量写入（每个 Map 展开为数组）
+    // 批量写入（先去重避免 className 主键冲突）
     await db.items.bulkAdd(Array.from(index.items.values()))
-    await db.recipes.bulkAdd(recipesMapToArray(index.recipes))
-    await db.recipesByIngredient.bulkAdd(recipesMapToArray(index.recipesByIngredient))
+    await db.recipes.bulkAdd(dedupByClass(recipesMapToArray(index.recipes)))
+    await db.recipesByIngredient.bulkAdd(dedupByClass(recipesMapToArray(index.recipesByIngredient)))
     await db.buildings.bulkAdd(Array.from(index.buildings.values()))
     await db.generators.bulkAdd(Array.from(index.generators.values()))
   })
@@ -161,8 +173,13 @@ export async function cacheData(index: DataIndex): Promise<void> {
  * @returns 缓存的 DataIndex，若缓存不存在或版本不匹配返回 null
  */
 export async function loadCachedData(): Promise<DataIndex | null> {
-  // 快速检测：localStorage 中的版本号不匹配说明缓存无效
-  if (localStorage.getItem(CACHE_META_KEY) !== String(CACHE_VERSION)) {
+  try {
+    // 快速检测：localStorage 中的版本号不匹配说明缓存无效
+    // 注意：getItem 在隐私模式下可能抛出 SecurityError，放入 try 块保护
+    if (localStorage.getItem(CACHE_META_KEY) !== String(CACHE_VERSION)) {
+      return null
+    }
+  } catch {
     return null
   }
 
@@ -190,7 +207,7 @@ export async function loadCachedData(): Promise<DataIndex | null> {
     }
   } catch {
     // IndexedDB 不可用（如隐私模式）或数据损坏，清理标记后返回 null
-    localStorage.removeItem(CACHE_META_KEY)
+    try { localStorage.removeItem(CACHE_META_KEY) } catch { /* 隐私模式下 removeItem 也可能失败 */ }
     return null
   }
 }
