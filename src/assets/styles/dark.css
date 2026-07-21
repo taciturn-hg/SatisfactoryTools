@@ -1,0 +1,57 @@
+:root {
+  /* 背景色 */
+  --bg-primary: #222222;
+  --bg-secondary: #303030;
+  --bg-tertiary: #3a3a3a;
+
+  /* 文字颜色 */
+  --text-primary: #e0e0e0;
+  --text-secondary: #a0a0a0;
+  --text-muted: #707070;
+
+  /* 边框 */
+  --border-color: #444444;
+  --border-color-light: #555555;
+
+  /* 品牌色/强调色 */
+  --color-primary: #1890ff;
+  --color-primary-hover: #40a9ff;
+  --color-success: #52c41a;
+  --color-warning: #faad14;
+  --color-error: #ff4d4f;
+
+  /* 节点颜色 */
+  --node-resource: #888888;       /* 基础资源 - 灰色 */
+  --node-intermediate: #d4832a;   /* 中间产物 - 橙色 */
+  --node-final: #52c41a;          /* 最终产品 - 绿色 */
+  --node-byproduct: #4a9eff;     /* 副产物 - 蓝色 */
+
+  /* 间距 */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+
+  /* 圆角 */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* 阴影 */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+
+  /* 左侧面板宽度 */
+  --panel-width: 360px;
+
+  /* 过渡 */
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.25s ease;
+
+  /* z-index 层级 */
+  --z-panel: 100;
+  --z-toolbar: 200;
+  --z-modal: 1000;
+}
