@@ -21,6 +21,11 @@ function getNodeType(data: ProductionNode): string {
   return 'intermediate'
 }
 
+/** 判断是否有任意机器超频（时钟 > 1.0） */
+function isOverclocked(clocks: number[]): boolean {
+  return clocks.some(c => c > 1.01)
+}
+
 /**
  * 格式化频率分配文本，如 [1, 1, 0.4] → "2×100%, 1×40%"
  * 精度保留到小数点后 2 位，末尾.00省略
@@ -105,6 +110,7 @@ export function toVueFlowGraph(graph: ProductionGraph, index?: DataIndex): {
       clockInfo: formatClocks(node.machineClocks),
       machineCount: node.machineCount,
       totalMachines: node.machineClocks ? node.machineClocks.length : Math.ceil(node.machineCount),
+      isOverclocked: isOverclocked(node.machineClocks),
     },
   }))
 

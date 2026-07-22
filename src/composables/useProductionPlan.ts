@@ -31,12 +31,13 @@ export function useProductionPlan() {
       const bld = index.buildings.get(data.machineType)
       const p = bld?.powerConsumption
       if (!p) continue
-      // 有效时钟和 = 所有机器频率之和
-      const clockSum = data.machineClocks.reduce((s: number, c: number) => s + c, 0)
-      power += p * clockSum
+      // 游戏功率公式：实际功率 = 基础功率 × sum(clock_i^1.6)
+      // 生产建筑固定使用 1.6 指数
+      for (const c of data.machineClocks) {
+        power += p * Math.pow(c, 1.6)
+      }
     }
     const rounded = Math.round(power * 10) / 10
-    console.log('totalPower', power, rounded)
     return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(1)
   })
 

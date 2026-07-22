@@ -44,6 +44,9 @@ export interface PlanOptions {
   extractorConfig?: ExtractorConfig
   /** 用户输入的原料（itemClass → 提供速率），用于扣减图中的需求 */
   inputItems?: Map<string, number>
+
+  /** 可用于超频的能量碎片数量 */
+  powerShards?: number
 }
 
 /** 采矿机等级 */

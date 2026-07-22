@@ -119,33 +119,41 @@ function resolveResourceExtractor(
 /**
  * 根据需求速率和单机产量计算台数与频率分配。
  *
- * 规则：整数台满频(100%) + 不足一台时降频处理。
- * 微量余数（< 0.005）合并到最后一台满频机器上以避免累积产能不足。
- * 如 2.4 台 → 2×100%, 1×40%
- * 如 2.003 台 → 2×100.3%
+ * maxClock 控制每台机器的频率上限（无超频 = 1，3碎片超频 = 2.5）。
+ * 策略：优先用更少的机器跑到 maxClock，满足需求后再补一台降频。
+ * 如需要 2.4 台、maxClock=1 → 2×100%, 1×40%
+ * 如需要 2.4 台、maxClock=2.5 → 1×240%, 1×降频填剩余
+ * 微小余数（< 单台产量的 0.5%）合并到最后一台机器上，避免凭空多一台机器。
  */
-function calcMachineGroup(rate: number, perMachineRate: number): {
+function calcMachineGroup(
+  rate: number,
+  perMachineRate: number,
+  maxClock: number = 1,
+): {
   machineCount: number
   clocks: number[]
 } {
   if (perMachineRate <= 0 || rate <= 0 || !Number.isFinite(rate) || !Number.isFinite(perMachineRate)) {
     return { machineCount: 0, clocks: [] }
   }
-  const rawCount = rate / perMachineRate
+  const basePerMachine = perMachineRate * maxClock
+  const rawCount = rate / basePerMachine
   const fullMachines = Math.floor(rawCount)
-  const remainder = rawCount - fullMachines
+  const remainder = rate - fullMachines * basePerMachine
   const clocks: number[] = []
 
   if (fullMachines > 0) {
-    clocks.push(...Array<number>(fullMachines).fill(1))
-    const roundedRemainder = Number(remainder.toFixed(4))
-    if (roundedRemainder > 0.005) {
-      clocks.push(roundedRemainder)
-    } else if (roundedRemainder > 0) {
-      clocks[clocks.length - 1] = Number((1 + roundedRemainder).toFixed(4))
+    clocks.push(...Array<number>(fullMachines).fill(maxClock))
+    // remainderFraction: 剩余所需相当于多少台机器的产量（无量纲）
+    const remainderFraction = remainder / perMachineRate
+    if (remainderFraction > 0.005) {
+      const lastClock = Number(remainderFraction.toFixed(4))
+      clocks.push(Math.min(lastClock, maxClock))
+    } else if (remainderFraction > 0) {
+      clocks[clocks.length - 1] = Number((maxClock + remainderFraction).toFixed(4))
     }
   } else {
-    clocks.push(Number(rawCount.toFixed(4)))
+    clocks.push(Number((rate / perMachineRate).toFixed(4)))
   }
 
   return { machineCount: rawCount, clocks }
@@ -398,6 +406,7 @@ export function planProduction(index: DataIndex, options: PlanOptions): Producti
 
   mergeDuplicateNodes(graph, index, options)
   applyInputItems(graph, index, options)
+  applyOverclock(graph, index, options)
 
   // 将根节点拆分为机器节点 + 目标产出展示节点
   const planRoot = graph.nodes.find(n => n.depth === 0 && !n.isUnused && !n.isByproduct)
@@ -680,4 +689,108 @@ function removeNodeAndUpstream(node: ProductionNode, graph: ProductionGraph): vo
     e => !toRemove.has(e.sourceNodeId) && !toRemove.has(e.targetNodeId)
   )
   graph.nodes = graph.nodes.filter(n => !toRemove.has(n.id))
+}
+
+/* ==================== 超频分配 ==================== */
+
+/**
+ * 获取节点单台机器的基准产量/分钟。
+ */
+function getNodePerMachineRate(
+  node: ProductionNode,
+  index: DataIndex,
+  options: PlanOptions,
+): number | undefined {
+  if (node.recipeUsed) {
+    const mainProduct = node.recipeUsed.products.find(p => p.itemClass === node.itemClass)
+    if (!mainProduct) return undefined
+    return ratePerMinute(mainProduct.amount, node.recipeUsed.manufactoringDuration)
+  }
+  const extractor = resolveResourceExtractor(node.itemClass, index, options.extractorConfig)
+  return extractor?.perMachineRate
+}
+
+/**
+ * 将可用能量碎片分配给生产节点。
+ *
+ * 两阶段分配：
+ *  阶段一：叶子节点（资源采集器）优先，每个节点按需分配碎片
+ *  阶段二：剩余碎片分配给中间节点，按原始机台数降序
+ *
+ * 每台机器最多 3 碎片（250%），碎片按机器逐台分配，确保总消耗不超库存。
+ * 如：3 碎片 → 1 台 250%，剩余需求用无碎片机器补足。
+ */
+function applyOverclock(
+  graph: ProductionGraph,
+  index: DataIndex,
+  options: PlanOptions,
+): void {
+  const totalShards = options.powerShards ?? 0
+  if (totalShards <= 0) return
+
+  const prodNodes = graph.nodes.filter(
+    n => !n.isByproduct && !n.isUnused && !n.isOutputTarget && (n.recipeUsed || n.machineType),
+  )
+  if (prodNodes.length === 0) return
+
+  // 判断叶子节点：prodNodes 中 recipeUsed===null 的必然是资源采集器
+  const demands: { node: ProductionNode; rawCount: number; baseRate: number; isLeaf: boolean }[] = []
+  for (const node of prodNodes) {
+    const baseRate = getNodePerMachineRate(node, index, options)
+    if (!baseRate || baseRate <= 0) continue
+    const rawCount = node.rate / baseRate
+    if (rawCount > 1) {
+      demands.push({ node, rawCount, baseRate, isLeaf: !node.recipeUsed })
+    }
+  }
+
+  if (demands.length === 0) return
+
+  demands.sort((a, b) => {
+    if (a.isLeaf !== b.isLeaf) return a.isLeaf ? -1 : 1
+    return b.rawCount - a.rawCount
+  })
+
+  let remaining = totalShards
+
+  for (const { node, baseRate } of demands) {
+    if (remaining <= 0) break
+
+    const clocks: number[] = []
+    let unmet = node.rate
+
+    // 阶段一：尽可能用 3 碎片跑 250% 机器
+    while (remaining >= 3 && unmet > baseRate * 2.5 + 0.005) {
+      clocks.push(2.5)
+      unmet -= baseRate * 2.5
+      remaining -= 3
+    }
+
+    // 阶段二：用剩余 1-2 碎片跑 150%/200%
+    if (remaining >= 1 && unmet > baseRate + 0.005) {
+      const shardCount = Math.min(remaining, 3)
+      const clock = 1 + shardCount * 0.5
+      clocks.push(clock)
+      unmet -= baseRate * clock
+      remaining -= shardCount
+    }
+
+    // 阶段三：无碎片机器补足剩余需求，最后一台降频
+    if (unmet > 0.005) {
+      const full100 = Math.floor(unmet / baseRate)
+      for (let i = 0; i < full100; i++) clocks.push(1)
+      unmet -= full100 * baseRate
+      const remainderFraction = unmet / baseRate
+      if (remainderFraction > 0.005) {
+        clocks.push(Number(remainderFraction.toFixed(4)))
+      } else if (remainderFraction > 0 && clocks.length > 0) {
+        clocks[clocks.length - 1] = Number((clocks[clocks.length - 1]! + remainderFraction).toFixed(4))
+      }
+    }
+
+    node.machineClocks = clocks
+    node.machineCount = clocks.length > 0
+      ? clocks.reduce((s, c) => s + c, 0)
+      : node.machineCount
+  }
 }

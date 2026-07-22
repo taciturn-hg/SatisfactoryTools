@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useDataStore } from '@/stores/dataStore'
+
+const emit = defineEmits<{ change: [] }>()
 
 const dataStore = useDataStore()
 
@@ -63,6 +65,14 @@ const pipeSpeed = ref<string>('')
 // 超频
 const powerShardCount = ref(0)
 const somerCount = ref(0)
+
+// 任一配置变更时通知父组件
+watch(
+  [selectedRecipes, selectedConverter, minerLevel, minerPurity,
+   oilExtractor, oilPurity, waterExtractor, waterPurity, gasPurity,
+   powerShardCount],
+  () => emit('change'),
+)
 
 defineExpose({
   selectedRecipes,
@@ -321,7 +331,7 @@ defineExpose({
 
     <div class="section-divider" />
 
-    <div class="section-title">超频（暂未完成）</div>
+    <div class="section-title">超频</div>
 
     <div class="param-section">
       <div class="param-label">可用的能量碎片</div>

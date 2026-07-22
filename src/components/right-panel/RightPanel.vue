@@ -126,6 +126,7 @@ function runPlan() {
     layoutDirection: 'horizontal',
     extractorConfig,
     inputItems: inputRates.value,
+    powerShards: paramsRef.value?.powerShardCount ?? 0,
   })
 
   autoLayout(graph, 'horizontal')
@@ -139,22 +140,8 @@ function debounceRun() {
   debounceTimer = setTimeout(() => runPlan(), 300)
 }
 watch(
-  [outputItems, inputItems, outputRates, inputRates, () => paramsRef.value && {
-    selectedRecipes: paramsRef.value.selectedRecipes,
-    selectedConverter: paramsRef.value.selectedConverter,
-    minerLevel: paramsRef.value.minerLevel,
-    minerPurity: paramsRef.value.minerPurity,
-    oilExtractor: paramsRef.value.oilExtractor,
-    oilPurity: paramsRef.value.oilPurity,
-    waterExtractor: paramsRef.value.waterExtractor,
-    waterPurity: paramsRef.value.waterPurity,
-    gasPurity: paramsRef.value.gasPurity,
-  }],
-  () => {
-    clearTimeout(debounceTimer)
-    debounceTimer = setTimeout(() => runPlan(), 300)
-  },
-  { deep: true },
+  [outputItems, inputItems, outputRates, inputRates],
+  () => debounceRun(),
 )
 
 /** 从 dataStore 获取所有物品，转为 a-select 所需格式 */
@@ -215,71 +202,71 @@ const availableItems = computed(() =>
       <div v-else class="item-list-placeholder">数据加载中...</div>
     </div>
 
-    <template v-else-if="activeTab === 'output'">
-      <div class="panel-top">
-        <div class="search-add-row">
-          <a-select
-            v-model:value="selectedItem"
-            show-search
-            placeholder="搜索添加物品..."
-            :options="availableItems"
-            :filter-option="(input: string, option: { label: string }) => option.label.toLowerCase().includes(input.toLowerCase())"
-            style="width: 100%"
-            :getPopupContainer="(trigger: HTMLElement) => trigger.parentElement"
-          />
-          <button class="btn-add" :disabled="!selectedItem" @click="addItem">＋</button>
+    <template v-else>
+      <div v-show="activeTab === 'output'" class="tab-pane">
+        <div class="panel-top">
+          <div class="search-add-row">
+            <a-select
+              v-model:value="selectedItem"
+              show-search
+              placeholder="搜索添加物品..."
+              :options="availableItems"
+              :filter-option="(input: string, option: { label: string }) => option.label.toLowerCase().includes(input.toLowerCase())"
+              style="width: 100%"
+              :getPopupContainer="(trigger: HTMLElement) => trigger.parentElement"
+            />
+            <button class="btn-add" :disabled="!selectedItem" @click="addItem">＋</button>
+          </div>
+        </div>
+        <div class="panel-content">
+          <div v-if="outputItems.length === 0" class="item-list-placeholder">暂无物品</div>
+          <div v-else class="item-list">
+            <ItemDetail
+              v-for="(val) in outputItems"
+              :key="val"
+              :item-value="val"
+              :item-name="itemLabelMap.get(val) ?? val"
+              :rate="getItemRate(val)"
+              @delete="removeOutputItem"
+              @update:rate="updateItemRate"
+            />
+          </div>
         </div>
       </div>
-      <div class="panel-content">
-        <div v-if="outputItems.length === 0" class="item-list-placeholder">暂无物品</div>
-        <div v-else class="item-list">
-          <ItemDetail
-            v-for="(val) in outputItems"
-            :key="val"
-            :item-value="val"
-            :item-name="itemLabelMap.get(val) ?? val"
-            :rate="getItemRate(val)"
-            @delete="removeOutputItem"
-            @update:rate="updateItemRate"
-          />
-        </div>
-      </div>
-    </template>
 
-    <template v-else-if="activeTab === 'input'">
-      <div class="panel-top">
-        <div class="search-add-row">
-          <a-select
-            v-model:value="selectedItem"
-            show-search
-            placeholder="搜索添加物品..."
-            :options="availableItems"
-            :filter-option="(input: string, option: { label: string }) => option.label.toLowerCase().includes(input.toLowerCase())"
-            style="width: 100%"
-            :getPopupContainer="(trigger: HTMLElement) => trigger.parentElement"
-          />
-          <button class="btn-add" :disabled="!selectedItem" @click="addItem">＋</button>
+      <div v-show="activeTab === 'input'" class="tab-pane">
+        <div class="panel-top">
+          <div class="search-add-row">
+            <a-select
+              v-model:value="selectedItem"
+              show-search
+              placeholder="搜索添加物品..."
+              :options="availableItems"
+              :filter-option="(input: string, option: { label: string }) => option.label.toLowerCase().includes(input.toLowerCase())"
+              style="width: 100%"
+              :getPopupContainer="(trigger: HTMLElement) => trigger.parentElement"
+            />
+            <button class="btn-add" :disabled="!selectedItem" @click="addItem">＋</button>
+          </div>
+        </div>
+        <div class="panel-content">
+          <div v-if="inputItems.length === 0" class="item-list-placeholder">暂无物品</div>
+          <div v-else class="item-list">
+            <ItemDetail
+              v-for="(val) in inputItems"
+              :key="val"
+              :item-value="val"
+              :item-name="itemLabelMap.get(val) ?? val"
+              :rate="getInputRate(val)"
+              @delete="removeInputItem"
+              @update:rate="updateInputRate"
+            />
+          </div>
         </div>
       </div>
-      <div class="panel-content">
-        <div v-if="inputItems.length === 0" class="item-list-placeholder">暂无物品</div>
-        <div v-else class="item-list">
-          <ItemDetail
-            v-for="(val) in inputItems"
-            :key="val"
-            :item-value="val"
-            :item-name="itemLabelMap.get(val) ?? val"
-            :rate="getInputRate(val)"
-            @delete="removeInputItem"
-            @update:rate="updateInputRate"
-          />
-        </div>
-      </div>
-    </template>
 
-    <template v-else-if="activeTab === 'config'">
-      <div class="panel-content config-content">
-        <PlanParams ref="paramsRef" />
+      <div v-show="activeTab === 'config'" class="tab-pane panel-content config-content">
+        <PlanParams ref="paramsRef" @change="debounceRun" />
       </div>
     </template>
 
@@ -383,6 +370,13 @@ const availableItems = computed(() =>
   padding: 8px 0;
   display: flex;
   flex-direction: column;
+}
+
+.tab-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 
 .panel-content {

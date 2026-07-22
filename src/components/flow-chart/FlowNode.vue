@@ -18,6 +18,7 @@ const props = defineProps<{
     clockInfo?: string
     itemIcon?: string
     totalMachines?: number
+    isOverclocked?: boolean
   }
 }>()
 
@@ -48,7 +49,11 @@ const handleStyle = {
 </script>
 
 <template>
-  <div class="flow-node" :style="{ borderColor: borderColor, borderStyle }">
+  <div
+    class="flow-node"
+    :class="{ 'node-overclocked': data.isOverclocked }"
+    :style="{ borderColor, borderStyle }"
+  >
     <div class="node-content">
       <div class="node-icon">
         <img v-if="data.itemIcon" :src="data.itemIcon" :alt="data.name" class="node-icon-img" />
@@ -81,6 +86,9 @@ const handleStyle = {
 }
 .flow-node:hover {
   box-shadow: var(--shadow-md);
+}
+.node-overclocked {
+  box-shadow: 0 0 12px 2px rgba(255, 200, 50, 0.5), 0 0 24px 4px rgba(255, 200, 50, 0.2);
 }
 
 .node-content {
