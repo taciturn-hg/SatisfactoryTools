@@ -1,9 +1,17 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useDataStore } from '@/stores/dataStore'
+import { planProduction } from '@/lib/productionEngine'
+import { autoLayout } from '@/lib/layoutHelper'
 import ItemDetail from '@/components/right-panel/ItemDetail.vue'
 import PlanParams from '@/components/right-panel/PlanParams.vue'
 import PlanActions from '@/components/right-panel/PlanActions.vue'
+import type { ProductionGraph, ExtractorConfig } from '@/types'
+
+const emit = defineEmits<{
+  graphReady: [graph: ProductionGraph]
+  reset: []
+}>()
 
 const dataStore = useDataStore()
 
@@ -11,19 +19,146 @@ const activeTab = ref<'output' | 'input' | 'config'>('output')
 
 const outputItems = ref<string[]>([])
 const inputItems = ref<string[]>([])
+const outputRates = ref(new Map<string, number>())
+const inputRates = ref(new Map<string, number>())
+
+function getItemRate(itemClass: string): number {
+  return outputRates.value.get(itemClass) ?? 1
+}
+
+function updateItemRate(itemClass: string, rate: number) {
+  if (rate <= 0) {
+    const next = new Map(outputRates.value)
+    next.delete(itemClass)
+    outputRates.value = next
+    outputItems.value = outputItems.value.filter((v) => v !== itemClass)
+  } else {
+    outputRates.value = new Map(outputRates.value).set(itemClass, rate)
+  }
+}
+
+function getInputRate(itemClass: string): number {
+  return inputRates.value.get(itemClass) ?? 0
+}
+
+function updateInputRate(itemClass: string, rate: number) {
+  if (rate <= 0) {
+    const next = new Map(inputRates.value)
+    next.delete(itemClass)
+    inputRates.value = next
+    inputItems.value = inputItems.value.filter((v) => v !== itemClass)
+  } else {
+    inputRates.value = new Map(inputRates.value).set(itemClass, rate)
+  }
+}
+
+/**
+ * 将 PlanParams 中用户选择的替代配方和转换器配方
+ * 转换为 Map<itemClass, recipeClass> 格式传给引擎。
+ */
+function buildAlternativeMap(): Map<string, string> {
+  const map = new Map<string, string>()
+  const p = paramsRef.value
+  if (!p) return map
+
+  const allRecipes = p.selectedRecipes.concat(p.selectedConverter)
+  if (!allRecipes.length) return map
+
+  const recipeSet = new Set(allRecipes)
+  for (const recipeList of dataStore.index!.recipes.values()) {
+    for (const r of recipeList) {
+      if (recipeSet.has(r.className)) {
+        for (const product of r.products) {
+          map.set(product.itemClass, r.className)
+        }
+      }
+    }
+  }
+  return map
+}
 
 function removeOutputItem(value: string) {
   outputItems.value = outputItems.value.filter((v) => v !== value)
+  const next = new Map(outputRates.value)
+  next.delete(value)
+  outputRates.value = next
+  debounceRun()
 }
 function removeInputItem(value: string) {
   inputItems.value = inputItems.value.filter((v) => v !== value)
+  const next = new Map(inputRates.value)
+  next.delete(value)
+  inputRates.value = next
+  debounceRun()
 }
 function resetList() {
   outputItems.value = []
   inputItems.value = []
+  outputRates.value = new Map()
+  inputRates.value = new Map()
+  emit('reset')
 }
 
-/** 从 dataStore 获取所有物品，转为 a-select 所需格式（复用 dataStore.allItems 的排序） */
+const paramsRef = ref<InstanceType<typeof PlanParams> | null>(null)
+
+function runPlan() {
+  if (!dataStore.index) return
+  if (!outputItems.value.length) {
+    emit('reset')
+    return
+  }
+
+  const p = paramsRef.value
+  const extractorConfig: ExtractorConfig = {
+    minerLevel: (p?.minerLevel ?? 'mk1') as ExtractorConfig['minerLevel'],
+    minerPurity: (p?.minerPurity ?? 'normal') as ExtractorConfig['minerPurity'],
+    oilExtractor: (p?.oilExtractor ?? 'oil_well') as ExtractorConfig['oilExtractor'],
+    oilPurity: (p?.oilPurity ?? 'normal') as ExtractorConfig['oilPurity'],
+    waterExtractor: (p?.waterExtractor ?? 'water_extractor') as ExtractorConfig['waterExtractor'],
+    waterPurity: (p?.waterPurity ?? 'normal') as ExtractorConfig['waterPurity'],
+    gasPurity: (p?.gasPurity ?? 'normal') as ExtractorConfig['gasPurity'],
+  }
+
+  const graph = planProduction(dataStore.index, {
+    targetItemClass: outputItems.value[0]!,
+    targetRate: getItemRate(outputItems.value[0]!),
+    alternativeRecipes: buildAlternativeMap(),
+    byproductStrategy: 'discard',
+    layoutDirection: 'horizontal',
+    extractorConfig,
+    inputItems: inputRates.value,
+  })
+
+  autoLayout(graph, 'horizontal')
+  emit('graphReady', graph)
+}
+
+// 产出列表、原料 rates、原料列表、配置参数任一变化时自动重算（300ms 防抖）
+let debounceTimer: ReturnType<typeof setTimeout> | undefined
+function debounceRun() {
+  clearTimeout(debounceTimer)
+  debounceTimer = setTimeout(() => runPlan(), 300)
+}
+watch(
+  [outputItems, inputItems, outputRates, inputRates, () => paramsRef.value && {
+    selectedRecipes: paramsRef.value.selectedRecipes,
+    selectedConverter: paramsRef.value.selectedConverter,
+    minerLevel: paramsRef.value.minerLevel,
+    minerPurity: paramsRef.value.minerPurity,
+    oilExtractor: paramsRef.value.oilExtractor,
+    oilPurity: paramsRef.value.oilPurity,
+    waterExtractor: paramsRef.value.waterExtractor,
+    waterPurity: paramsRef.value.waterPurity,
+    gasPurity: paramsRef.value.gasPurity,
+  }],
+  () => {
+    clearTimeout(debounceTimer)
+    debounceTimer = setTimeout(() => runPlan(), 300)
+  },
+  { deep: true },
+)
+
+/** 从 dataStore 获取所有物品，转为 a-select 所需格式 */
 const allItems = computed(() => {
   if (!dataStore.isLoaded) return []
   return dataStore.allItems.map((item) => ({
@@ -56,6 +191,7 @@ function addItem() {
     outputItems.value = [...outputItems.value, selectedItem.value]
   } else {
     inputItems.value = [...inputItems.value, selectedItem.value]
+    inputRates.value = new Map(inputRates.value).set(selectedItem.value, 1)
   }
   selectedItem.value = undefined
 }
@@ -103,7 +239,9 @@ const availableItems = computed(() =>
             :key="val"
             :item-value="val"
             :item-name="itemLabelMap.get(val) ?? val"
+            :rate="getItemRate(val)"
             @delete="removeOutputItem"
+            @update:rate="updateItemRate"
           />
         </div>
       </div>
@@ -132,7 +270,9 @@ const availableItems = computed(() =>
             :key="val"
             :item-value="val"
             :item-name="itemLabelMap.get(val) ?? val"
+            :rate="getInputRate(val)"
             @delete="removeInputItem"
+            @update:rate="updateInputRate"
           />
         </div>
       </div>
@@ -140,7 +280,7 @@ const availableItems = computed(() =>
 
     <template v-else-if="activeTab === 'config'">
       <div class="panel-content config-content">
-        <PlanParams />
+        <PlanParams ref="paramsRef" />
       </div>
     </template>
 

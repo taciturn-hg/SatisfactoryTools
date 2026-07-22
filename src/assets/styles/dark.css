@@ -25,6 +25,7 @@
   --node-intermediate: #d4832a;   /* 中间产物 - 橙色 */
   --node-final: #52c41a;          /* 最终产品 - 绿色 */
   --node-byproduct: #4a9eff;     /* 副产物 - 蓝色 */
+  --node-unused: #555555;        /* 未连接原料 - 深灰虚线 */
 
   /* 间距 */
   --spacing-xs: 4px;

@@ -2,15 +2,22 @@
 import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 
+function formatRate(rate: number): string {
+  const rounded = Math.round(rate * 10) / 10
+  return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(1)
+}
+
 const props = defineProps<{
   id: string
   data: {
     name: string
-    type: 'resource' | 'intermediate' | 'final' | 'byproduct'
+    type: 'resource' | 'intermediate' | 'final' | 'byproduct' | 'unused'
     rate: number
     buildingName?: string
-    efficiency?: number
-    productName?: string
+    machineCount?: number
+    clockInfo?: string
+    itemIcon?: string
+    totalMachines?: number
   }
 }>()
 
@@ -20,11 +27,16 @@ const borderColor = computed(() => {
     intermediate: 'var(--node-intermediate)',
     final: 'var(--node-final)',
     byproduct: 'var(--node-byproduct)',
+    unused: 'var(--node-unused)',
   }
   return map[props.data.type] ?? 'var(--node-intermediate)'
 })
 
-const borderStyle = computed(() => (props.data.type === 'byproduct' ? 'dashed' : 'solid'))
+const borderStyle = computed(() =>
+  props.data.type === 'byproduct' || props.data.type === 'unused'
+    ? 'dashed'
+    : 'solid'
+)
 
 const handleStyle = {
   background: 'transparent',
@@ -38,12 +50,19 @@ const handleStyle = {
 <template>
   <div class="flow-node" :style="{ borderColor: borderColor, borderStyle }">
     <div class="node-content">
-      <div class="node-icon">■</div>
+      <div class="node-icon">
+        <img v-if="data.itemIcon" :src="data.itemIcon" :alt="data.name" class="node-icon-img" />
+        <span v-else>■</span>
+      </div>
       <div class="node-text">
         <div class="building-line" v-if="data.buildingName">
-          {{ data.buildingName }}（{{ data.efficiency ?? 100 }}%）
+          🏭 {{ data.buildingName }}
         </div>
-        <div class="product-line">{{ data.productName ?? data.name }}（{{ data.rate }}/min）</div>
+        <div class="product-line">{{ data.name }} <span class="rate-tag">产出 {{ formatRate(data.rate) }}/min</span></div>
+        <div class="machine-line" v-if="data.clockInfo">
+          {{ data.totalMachines ?? Math.ceil(data.machineCount || 0) }}台
+          <span class="clock-detail">{{ data.clockInfo }}</span>
+        </div>
       </div>
     </div>
     <Handle type="target" :position="Position.Left" :style="handleStyle" />
@@ -53,7 +72,7 @@ const handleStyle = {
 
 <style scoped>
 .flow-node {
-  min-width: 140px;
+  min-width: 160px;
   border: 2px solid;
   border-radius: var(--radius-md);
   background: var(--bg-secondary);
@@ -82,6 +101,12 @@ const handleStyle = {
   font-size: 18px;
   flex-shrink: 0;
   opacity: 0.65;
+  overflow: hidden;
+}
+.node-icon-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .node-text {
@@ -89,10 +114,30 @@ const handleStyle = {
   color: var(--text-primary);
 }
 
-.building-line,
-.product-line {
-  font-size: 12px;
+.building-line {
+  font-size: 11px;
+  color: var(--text-muted);
   margin-bottom: 2px;
+}
+
+.product-line {
+  font-size: 13px;
   font-weight: 700;
+  margin-bottom: 2px;
+}
+
+.rate-tag {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-primary);
+}
+
+.machine-line {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.clock-detail {
+  color: var(--text-secondary);
 }
 </style>

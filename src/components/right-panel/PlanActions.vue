@@ -1,6 +1,5 @@
 <template>
   <div class="plan-actions">
-    <button class="btn btn-primary" disabled>规划</button>
     <button class="btn btn-danger" @click="$emit('reset')">重置</button>
     <button class="btn btn-default" disabled>保存</button>
     <button class="btn btn-default" disabled>加载</button>

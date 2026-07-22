@@ -1,36 +1,85 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
+import { useDataStore } from '@/stores/dataStore'
 
-const allOptions = [
-  { value: 'alt_pure_iron', label: '替代配方：纯铁锭' },
-  { value: 'alt_iron_plate', label: '替代配方：铸铁板' },
-  { value: 'alt_copper', label: '替代配方：铜锭-浸出法' },
-  { value: 'alt_steel_rod', label: '替代配方：钢制铁棒' },
-  { value: 'alt_steel_screw', label: '替代配方：钢制螺丝' },
-  { value: 'alt_caterium_wire', label: '替代配方：镀金线缆' },
-  { value: 'alt_alu_casing', label: '替代配方：铝制外壳' },
-  { value: 'alt_heat_sink', label: '替代配方：散热片改进' },
-  { value: 'alt_turbo_motor', label: '替代配方：涡轮马达' },
-]
+const dataStore = useDataStore()
 
-const allConverterOptions = [
-  { value: 'converter_alt_1', label: '替代转换：熔融铁' },
-  { value: 'converter_alt_2', label: '替代转换：熔融铜' },
-  { value: 'converter_alt_3', label: '替代转换：熔融钢' },
-  { value: 'converter_alt_4', label: '替代转换：熔融铝' },
-  { value: 'converter_alt_5', label: '替代转换：熔融锡' },
-]
+/** 从 dataStore 获取所有替代配方（标准配方暂不列入） */
+const alternateRecipes = computed(() => {
+  if (!dataStore.index) return []
+  const seen = new Set<string>()
+  const result: { value: string; label: string }[] = []
+  for (const recipeList of dataStore.index.recipes.values()) {
+    for (const r of recipeList) {
+      if (!r.isAlternate || seen.has(r.className)) continue
+      seen.add(r.className)
+      result.push({ value: r.className, label: r.displayName || r.className })
+    }
+  }
+  return result.sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'))
+})
+
+const converterRecipes = computed(() => {
+  if (!dataStore.index) return []
+  const seen = new Set<string>()
+  const result: { value: string; label: string }[] = []
+  for (const recipeList of dataStore.index.recipes.values()) {
+    for (const r of recipeList) {
+      if (seen.has(r.className)) continue
+      if (r.producedIn.some((p) => p === 'Build_Converter')) {
+        seen.add(r.className)
+        result.push({ value: r.className, label: r.displayName || r.className })
+      }
+    }
+  }
+  return result.sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'))
+})
 
 const selectedRecipes = ref<string[]>([])
 const selectedConverter = ref<string[]>([])
-const minerLevel = ref<string>('')
-const oilExtractorLevel = ref<string>('')
-const waterExtractorLevel = ref<string>('')
-const gasExtractorLevel = ref<string>('')
+
+// 目标参数
+const targetRate = ref(1)
+
+// 采矿机
+const minerLevel = ref<string>('mk1')
+const minerPurity = ref<string>('normal')
+
+// 采油
+const oilExtractor = ref<string>('oil_well')
+const oilPurity = ref<string>('normal')
+
+// 采水
+const waterExtractor = ref<string>('water_extractor')
+const waterPurity = ref<string>('normal')
+
+// 采气
+const gasPurity = ref<string>('normal')
+
+// 传送
 const beltSpeed = ref<string>('')
 const pipeSpeed = ref<string>('')
+
+// 超频
 const powerShardCount = ref(0)
 const somerCount = ref(0)
+
+defineExpose({
+  selectedRecipes,
+  selectedConverter,
+  targetRate,
+  minerLevel,
+  minerPurity,
+  oilExtractor,
+  oilPurity,
+  waterExtractor,
+  waterPurity,
+  gasPurity,
+  beltSpeed,
+  pipeSpeed,
+  powerShardCount,
+  somerCount,
+})
 </script>
 
 <template>
@@ -44,11 +93,16 @@ const somerCount = ref(0)
         mode="multiple"
         placeholder="选择替代配方（无选项 = 标准配方）"
         :max-tag-count="1"
-        :max-tag-placeholder="(omitted: { label: string }[]) => `已选 ${omitted.length + 1} 个替代配方`"
+        :max-tag-placeholder="
+          (omitted: { label: string }[]) => `已选 ${omitted.length + 1} 个替代配方`
+        "
         show-search
         :getPopupContainer="(trigger: HTMLElement) => trigger.parentElement"
-        :filter-option="(input: string, option: { label: string }) => option.label.toLowerCase().includes(input.toLowerCase())"
-        :options="allOptions"
+        :filter-option="
+          (input: string, option: { label: string }) =>
+            option.label.toLowerCase().includes(input.toLowerCase())
+        "
+        :options="alternateRecipes"
         style="width: 100%"
         :listHeight="128"
         :virtual="false"
@@ -57,7 +111,12 @@ const somerCount = ref(0)
           <div>
             <component :is="menu" />
             <div class="dropdown-actions">
-              <button class="dropdown-btn" @click="selectedRecipes = allOptions.map(o => o.value)">全选</button>
+              <button
+                class="dropdown-btn"
+                @click="selectedRecipes = alternateRecipes.map((o) => o.value)"
+              >
+                全选
+              </button>
               <button class="dropdown-btn" @click="selectedRecipes = []">清除</button>
             </div>
           </div>
@@ -70,13 +129,18 @@ const somerCount = ref(0)
       <a-select
         v-model:value="selectedConverter"
         mode="multiple"
-        placeholder="选择转换器配方（无选项 = 标准转换）"
+        placeholder="选择转换器配方（无选项 = 使用 Converter）"
         :max-tag-count="1"
-        :max-tag-placeholder="(omitted: { label: string }[]) => `已选 ${omitted.length + 1} 个转换配方`"
+        :max-tag-placeholder="
+          (omitted: { label: string }[]) => `已选 ${omitted.length + 1} 个转换配方`
+        "
         show-search
         :getPopupContainer="(trigger: HTMLElement) => trigger.parentElement"
-        :filter-option="(input: string, option: { label: string }) => option.label.toLowerCase().includes(input.toLowerCase())"
-        :options="allConverterOptions"
+        :filter-option="
+          (input: string, option: { label: string }) =>
+            option.label.toLowerCase().includes(input.toLowerCase())
+        "
+        :options="converterRecipes"
         style="width: 100%"
         :listHeight="128"
         :virtual="false"
@@ -85,7 +149,12 @@ const somerCount = ref(0)
           <div>
             <component :is="menu" />
             <div class="dropdown-actions">
-              <button class="dropdown-btn" @click="selectedConverter = allConverterOptions.map(o => o.value)">全选</button>
+              <button
+                class="dropdown-btn"
+                @click="selectedConverter = converterRecipes.map((o) => o.value)"
+              >
+                全选
+              </button>
               <button class="dropdown-btn" @click="selectedConverter = []">清除</button>
             </div>
           </div>
@@ -103,9 +172,9 @@ const somerCount = ref(0)
         v-model:value="minerLevel"
         placeholder="请选择"
         :options="[
-          { value: 'mk1', label: 'Mk.1 （120/分钟）' },
-          { value: 'mk2', label: 'Mk.2 （240/分钟）' },
-          { value: 'mk3', label: 'Mk.3 （480/分钟）' },
+          { value: 'mk1', label: 'Mk.1 （60/分钟 × 纯度）' },
+          { value: 'mk2', label: 'Mk.2 （120/分钟 × 纯度）' },
+          { value: 'mk3', label: 'Mk.3 （240/分钟 × 纯度）' },
         ]"
         style="width: 100%"
         :listHeight="128"
@@ -115,13 +184,14 @@ const somerCount = ref(0)
     </div>
 
     <div class="param-section">
-      <div class="param-label">采油机等级</div>
+      <div class="param-label">采矿节点纯度</div>
       <a-select
-        v-model:value="oilExtractorLevel"
+        v-model:value="minerPurity"
         placeholder="请选择"
         :options="[
-          { value: 'oil_mk1', label: 'Mk.1 （120/m³/分钟）' },
-          { value: 'oil_mk2', label: 'Mk.2 （240/m³/分钟）' },
+          { value: 'impure', label: '不纯 （×0.5 = 30/60/120）' },
+          { value: 'normal', label: '中纯 （×1 = 60/120/240）' },
+          { value: 'pure', label: '高纯 （×2 = 120/240/480）' },
         ]"
         style="width: 100%"
         :listHeight="128"
@@ -131,12 +201,13 @@ const somerCount = ref(0)
     </div>
 
     <div class="param-section">
-      <div class="param-label">采水机等级</div>
+      <div class="param-label">采油建筑</div>
       <a-select
-        v-model:value="waterExtractorLevel"
+        v-model:value="oilExtractor"
         placeholder="请选择"
         :options="[
-          { value: 'water_mk1', label: 'Mk.1 （120/m³/分钟）' },
+          { value: 'oil_well', label: '油井' },
+          { value: 'resource_well', label: '资源提取器' },
         ]"
         style="width: 100%"
         :listHeight="128"
@@ -146,12 +217,64 @@ const somerCount = ref(0)
     </div>
 
     <div class="param-section">
-      <div class="param-label">采气机等级</div>
+      <div class="param-label">采油节点纯度</div>
       <a-select
-        v-model:value="gasExtractorLevel"
+        v-model:value="oilPurity"
         placeholder="请选择"
         :options="[
-          { value: 'gas_mk1', label: 'Mk.1 （120/分钟）' },
+          { value: 'impure', label: '不纯 （×0.5）' },
+          { value: 'normal', label: '中纯 （×1）' },
+          { value: 'pure', label: '高纯 （×2）' },
+        ]"
+        style="width: 100%"
+        :listHeight="128"
+        :getPopupContainer="(trigger: HTMLElement) => trigger.parentElement"
+        :virtual="false"
+      />
+    </div>
+
+    <div class="param-section">
+      <div class="param-label">采水建筑</div>
+      <a-select
+        v-model:value="waterExtractor"
+        placeholder="请选择"
+        :options="[
+          { value: 'water_extractor', label: '抽水站 （固定 120/min）' },
+          { value: 'resource_well', label: '资源提取器 （120/min × 纯度）' },
+        ]"
+        style="width: 100%"
+        :listHeight="128"
+        :getPopupContainer="(trigger: HTMLElement) => trigger.parentElement"
+        :virtual="false"
+      />
+    </div>
+
+    <div class="param-section">
+      <div class="param-label">采水节点纯度</div>
+      <a-select
+        v-model:value="waterPurity"
+        placeholder="请选择"
+        :options="[
+          { value: 'impure', label: '不纯 （×0.5）' },
+          { value: 'normal', label: '中纯 （×1）' },
+          { value: 'pure', label: '高纯 （×2）' },
+        ]"
+        style="width: 100%"
+        :listHeight="128"
+        :getPopupContainer="(trigger: HTMLElement) => trigger.parentElement"
+        :virtual="false"
+      />
+    </div>
+
+    <div class="param-section">
+      <div class="param-label">采气节点纯度</div>
+      <a-select
+        v-model:value="gasPurity"
+        placeholder="请选择"
+        :options="[
+          { value: 'impure', label: '不纯 （×0.5）' },
+          { value: 'normal', label: '中纯 （×1）' },
+          { value: 'pure', label: '高纯 （×2）' },
         ]"
         style="width: 100%"
         :listHeight="128"
@@ -202,11 +325,11 @@ const somerCount = ref(0)
 
     <div class="param-section">
       <div class="param-label">可用的能量碎片</div>
-      <input type="number" class="param-input" v-model.number="powerShardCount" min="0" step="1" onkeydown="return event.key === 'Backspace' || (!event.ctrlKey && !event.altKey && /^\\d$/.test(event.key))" />
+      <input type="number" class="param-input" v-model.number="powerShardCount" min="0" step="1" />
     </div>
     <div class="param-section">
       <div class="param-label">可用的索莫晶体</div>
-      <input type="number" class="param-input" v-model.number="somerCount" min="0" step="1" onkeydown="return event.key === 'Backspace' || (!event.ctrlKey && !event.altKey && /^\\d$/.test(event.key))" />
+      <input type="number" class="param-input" v-model.number="somerCount" min="0" step="1" />
     </div>
 
     <div class="section-bottom-spacer" />

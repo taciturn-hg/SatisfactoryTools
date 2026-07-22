@@ -9,10 +9,15 @@ export interface ProductionNode {
   recipeUsed: GameRecipe | null
   machineCount: number
   machineType: string | null
+  /** 每台机器的频率分配，如 [1, 1, 0.4] 表示 2 台满频 + 1 台 40% */
+  machineClocks: number[]
   depth: number
   position?: { x: number; y: number }
   isByproduct: boolean
-  itemIcon?: string
+  /** 用户输入的原料在图内未匹配到时的孤立节点 */
+  isUnused?: boolean
+  /** 标记该节点为目标产出展示节点（绿色），由引擎在末尾自动添加 */
+  isOutputTarget?: boolean
 }
 
 /** 生产图中的边 */
@@ -33,6 +38,23 @@ export interface ProductionGraph {
 /** 副产物处理策略 */
 export type ByproductStrategy = 'discard' | 'utilize'
 
+/** 采矿机等级 */
+export type MinerLevel = 'mk1' | 'mk2' | 'mk3'
+
+/** 资源节点纯度 */
+export type NodePurity = 'impure' | 'normal' | 'pure'
+
+/** 基础设施配置（采集器、传送带、管道等） */
+export interface ExtractorConfig {
+  minerLevel: MinerLevel
+  minerPurity: NodePurity
+  oilExtractor: 'oil_well' | 'resource_well'
+  oilPurity: NodePurity
+  waterExtractor: 'water_extractor' | 'resource_well'
+  waterPurity: NodePurity
+  gasPurity: NodePurity
+}
+
 /** 单次规划的参数 */
 export interface PlanOptions {
   targetItemClass: string
@@ -40,6 +62,9 @@ export interface PlanOptions {
   alternativeRecipes: Map<string, string>
   byproductStrategy: ByproductStrategy
   layoutDirection: 'vertical' | 'horizontal'
+  extractorConfig?: ExtractorConfig
+  /** 用户输入的原料（itemClass → 提供速率），用于扣减图中的需求 */
+  inputItems?: Map<string, number>
 }
 
 /** 保存的规划方案 */

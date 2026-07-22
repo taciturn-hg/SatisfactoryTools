@@ -27,7 +27,7 @@ interface PersistedRecipeByIngredient extends GameRecipe {
   className: string
 }
 
-/** Dexie 持久化的建筑记录 */
+/** Dexie 持久化的建筑记录（统一包含 displayName、iconPath 等所有字段） */
 interface PersistedBuilding extends GameBuilding {
   className: string
 }
@@ -46,7 +46,7 @@ const db = new Dexie('SatisfactoryToolsDB') as Dexie & {
   generators: EntityTable<PersistedGenerator, 'className'>
 }
 
-db.version(1).stores({
+db.version(4).stores({
   items: 'className, displayName',
   recipes: 'className',
   recipesByIngredient: 'className',
@@ -104,7 +104,9 @@ function recipesArrayToMap(recipes: PersistedRecipe[]): Map<string, GameRecipe[]
 /**
  * 将 recipesByIngredient 数组按原料重构为 Map
  */
-function recipesByIngredientArrayToMap(recipes: PersistedRecipeByIngredient[]): Map<string, GameRecipe[]> {
+function recipesByIngredientArrayToMap(
+  recipes: PersistedRecipeByIngredient[],
+): Map<string, GameRecipe[]> {
   const map = new Map<string, GameRecipe[]>()
   for (const recipe of recipes) {
     for (const ing of recipe.ingredients) {
@@ -119,7 +121,7 @@ function recipesByIngredientArrayToMap(recipes: PersistedRecipeByIngredient[]): 
 /* ==================== 读写接口 ==================== */
 
 /** 缓存版本标识，若 DataIndex 结构变化可通过此值触发重建缓存 */
-const CACHE_VERSION = 1
+const CACHE_VERSION = 7
 
 /** localStorage 中用于判断是否存在有效缓存的 key */
 const CACHE_META_KEY = 'SatisfactoryTools_cache_version'
@@ -146,23 +148,37 @@ function dedupByClass<T extends { className: string }>(items: T[]): T[] {
  * 写入成功后，在 localStorage 中标记缓存版本号，用于后续快速判断是否需重新解析。
  */
 export async function cacheData(index: DataIndex): Promise<void> {
-  await db.transaction('rw', db.items, db.recipes, db.recipesByIngredient, db.buildings, db.generators, async () => {
-    // 清空旧数据（Dexie 不支持 clear 后马上 bulkAdd，用 delete() 删除所有记录）
-    await db.items.clear()
-    await db.recipes.clear()
-    await db.recipesByIngredient.clear()
-    await db.buildings.clear()
-    await db.generators.clear()
+  await db.transaction(
+    'rw',
+    db.items,
+    db.recipes,
+    db.recipesByIngredient,
+    db.buildings,
+    db.generators,
+    async () => {
+      // 清空旧数据
+      await db.items.clear()
+      await db.recipes.clear()
+      await db.recipesByIngredient.clear()
+      await db.buildings.clear()
+      await db.generators.clear()
 
-    // 批量写入（先去重避免 className 主键冲突）
-    await db.items.bulkAdd(Array.from(index.items.values()))
-    await db.recipes.bulkAdd(dedupByClass(recipesMapToArray(index.recipes)))
-    await db.recipesByIngredient.bulkAdd(dedupByClass(recipesMapToArray(index.recipesByIngredient)))
-    await db.buildings.bulkAdd(Array.from(index.buildings.values()))
-    await db.generators.bulkAdd(Array.from(index.generators.values()))
-  })
+      // 批量写入
+      await db.items.bulkAdd(Array.from(index.items.values()))
+      await db.recipes.bulkAdd(dedupByClass(recipesMapToArray(index.recipes)))
+      await db.recipesByIngredient.bulkAdd(
+        dedupByClass(recipesMapToArray(index.recipesByIngredient)),
+      )
+      await db.buildings.bulkAdd(Array.from(index.buildings.values()))
+      await db.generators.bulkAdd(Array.from(index.generators.values()))
+    },
+  )
 
-  localStorage.setItem(CACHE_META_KEY, String(CACHE_VERSION))
+  try {
+    localStorage.setItem(CACHE_META_KEY, String(CACHE_VERSION))
+  } catch {
+    // 隐私模式下 localStorage 可能不可用
+  }
 }
 
 /**
@@ -185,15 +201,15 @@ export async function loadCachedData(): Promise<DataIndex | null> {
 
   try {
     // 并行读取所有表
-    const [items, recipes, recipesByIngredient, buildings, generators] = await Promise.all([
-      db.items.toArray(),
-      db.recipes.toArray(),
-      db.recipesByIngredient.toArray(),
-      db.buildings.toArray(),
-      db.generators.toArray(),
-    ])
+    const [items, recipes, recipesByIngredient, buildings, generators] =
+      await Promise.all([
+        db.items.toArray(),
+        db.recipes.toArray(),
+        db.recipesByIngredient.toArray(),
+        db.buildings.toArray(),
+        db.generators.toArray(),
+      ])
 
-    // 数据一致性校验：核心数据不能为空
     if (items.length === 0 && recipes.length === 0) {
       return null
     }
@@ -207,7 +223,11 @@ export async function loadCachedData(): Promise<DataIndex | null> {
     }
   } catch {
     // IndexedDB 不可用（如隐私模式）或数据损坏，清理标记后返回 null
-    try { localStorage.removeItem(CACHE_META_KEY) } catch { /* 隐私模式下 removeItem 也可能失败 */ }
+    try {
+      localStorage.removeItem(CACHE_META_KEY)
+    } catch {
+      /* 隐私模式下 removeItem 也可能失败 */
+    }
     return null
   }
 }

@@ -36,12 +36,12 @@ export interface GameRecipe {
   variablePowerConsumptionFactor?: number
 }
 
-/** 生产建筑描述符 */
+/** 生产建筑描述符（key 统一为 Build_* 格式） */
 export interface GameBuilding {
   className: string
   displayName: string
   description: string
-  smallIcon?: string
+  iconPath?: string
   powerConsumption?: number
   cachedStackSize?: number
 }
@@ -91,6 +91,7 @@ export interface DataIndex {
   items: Map<string, GameItem>
   recipes: Map<string, GameRecipe[]>
   recipesByIngredient: Map<string, GameRecipe[]>
+  /** key 统一为 Build_* 格式（className 去掉 _C 后缀、Desc_ → Build_） */
   buildings: Map<string, GameBuilding>
   generators: Map<string, GameGenerator>
 }

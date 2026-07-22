@@ -62,14 +62,23 @@ function parseStackSizeForm(raw: string): number {
   return map[raw as StackSizeStr] ?? 100
 }
 
-/** 从 mSmallIcon / mPersistentBigIcon 路径中提取图标资源名，不存在的路径返回 undefined */
-function extractIconName(raw: string): string | undefined {
-  // 格式: "Texture2D /Game/.../IconDesc_xxx_256.IconDesc_xxx_256"
-  // 或 "None" / 空字符串
+/** 从 UE 路径中提取相对于 assets/icons/ 的路径。
+ *  输入: "Texture2D /Game/FactoryGame/Resource/Parts/IronPlate/UI/IconDesc_IronPlates_256.IconDesc_IronPlates_256"
+ *  输出: "Resource/Parts/IronPlate/UI/IconDesc_IronPlates_256.png"
+ *  取 FactoryGame/ 之后的部分，去掉末尾 .同名 后缀，补 .png */
+function extractIconPath(raw: string): string | undefined {
   if (!raw || raw === 'None') return undefined
-  // 匹配末尾以 . 分隔的同名资源：xxx.xxx
-  const match = raw.match(/\/([A-Za-z0-9_]+)\.\1$/)
-  return match ? match[1] : undefined
+  const path = raw.replace(/^Texture2D /, '').trim()
+  const idx = path.indexOf('FactoryGame/')
+  if (idx === -1) {
+    // 降级：取末尾同名资源名
+    const fallback = path.match(/\/([A-Za-z0-9_]+)\.\1$/)
+    return fallback ? fallback[1]! + '.png' : undefined
+  }
+  const relative = path.slice(idx + 'FactoryGame/'.length)
+  // 去掉末尾 .同名 后缀，如 IconDesc_IronPlates_256.IconDesc_IronPlates_256 → IconDesc_IronPlates_256
+  const cleaned = relative.replace(/([A-Za-z0-9_]+)\.\1$/, '$1')
+  return cleaned + '.png'
 }
 
 /* ==================== UE 内联属性解析 ==================== */
@@ -119,7 +128,7 @@ function parseUEItemAmountPairs(text: string): ItemAmount[] {
  *
  * @returns 提取的 ClassName 数组
  */
-function parseUEProducedIn(text: string): string[] {
+export function parseUEProducedIn(text: string): string[] {
   if (!text || text === '()') return []
 
   const results: string[] = []
@@ -230,8 +239,8 @@ function parseItem(raw: Record<string, string>): GameItem {
     energyValue: parseFloatValue(raw.mEnergyValue ?? '0'),
     radioactiveDecay: parseFloatValue(raw.mRadioactiveDecay ?? '0'),
     form: parseItemForm(raw.mForm ?? '') ?? 'solid',
-    smallIcon: extractIconName(raw.mSmallIcon ?? ''),
-    persistentBigIcon: extractIconName(raw.mPersistentBigIcon ?? ''),
+    smallIcon: extractIconPath(raw.mSmallIcon ?? ''),
+    persistentBigIcon: extractIconPath(raw.mPersistentBigIcon ?? ''),
     resourceSinkPoints: raw.mResourceSinkPoints
       ? parseIntValue(raw.mResourceSinkPoints)
       : undefined,
@@ -281,7 +290,7 @@ function parseBuilding(raw: Record<string, string>): GameBuilding {
     className: raw.ClassName ?? '',
     displayName: raw.mDisplayName || '',
     description: raw.mDescription ?? '',
-    smallIcon: extractIconName(raw.mSmallIcon ?? ''),
+    iconPath: extractIconPath(raw.mSmallIcon ?? ''),
     powerConsumption: raw.mPowerConsumption
       ? parseFloatValue(raw.mPowerConsumption)
       : undefined,
@@ -400,15 +409,46 @@ export function parseGameData(rawJson: unknown[]): DataIndex {
     const classes = (block as Record<string, unknown>).Classes as Record<string, string>[]
     if (!classes || !Array.isArray(classes)) continue
 
+    // 所有 FGBuildable* 块统一提取中文建筑名 + 功耗，合并到 buildings Map
+    if (nativeClass.startsWith('FGBuildable')) {
+      for (const raw of classes) {
+        const cn = raw.ClassName ?? ''
+        const name = raw.mDisplayName || ''
+        if (!cn || !name) continue
+        const key = cn.replace(/_C$/, '')
+        const power = raw.mPowerConsumption
+          ? parseFloatValue(raw.mPowerConsumption)
+          : undefined
+        const existing = index.buildings.get(key)
+        if (existing) {
+          if (name) existing.displayName = name
+          if (power !== undefined) existing.powerConsumption = power
+        } else {
+          index.buildings.set(key, {
+            className: key,
+            displayName: name,
+            description: '',
+            powerConsumption: power,
+          })
+        }
+      }
+    }
+
     switch (nativeClass) {
       /* ---------- 物品类块 ---------- */
-      // 6 种物品描述符统一用 parseItem，字段结构相同
+      // 11 种物品相关描述符统一用 parseItem，字段结构兼容
       case 'FGItemDescriptor':
       case 'FGResourceDescriptor':
       case 'FGItemDescriptorBiomass':
       case 'FGItemDescriptorNuclearFuel':
       case 'FGItemDescriptorPowerBoosterFuel':
-      case 'FGPowerShardDescriptor': {
+      case 'FGPowerShardDescriptor':
+      case 'FGConsumableDescriptor':
+      case 'FGEquipmentDescriptor':
+      case 'FGVehicleDescriptor':
+      case 'FGAmmoTypeProjectile':
+      case 'FGAmmoTypeSpreadshot':
+      case 'FGAmmoTypeInstantHit': {
         for (const raw of classes) {
           const item = parseItem(raw)
           if (item.className) index.items.set(item.className, item)
@@ -417,25 +457,46 @@ export function parseGameData(rawJson: unknown[]): DataIndex {
       }
 
       /* ---------- 配方块 ---------- */
+      // 只索引有实际生产建筑的制造配方（排除手搓/建造枪配方）
       case 'FGRecipe': {
         for (const raw of classes) {
           const recipe = parseRecipe(raw)
           if (!recipe.className) continue
 
+          // 跳过所有 producedIn 都是手搓/建造枪的配方（如墙体/地基等建筑配方）
+          if (recipe.producedIn.length > 0) {
+            const hasFactory = recipe.producedIn.some(
+              (p) => !p.startsWith('BP_') && !p.includes('WorkBench') && !p.includes('BuildGun')
+            )
+            if (!hasFactory) continue
+          }
+
           // 按产物索引：每种产出物品都能找到这个配方
           for (const product of recipe.products) {
             const list = index.recipes.get(product.itemClass) ?? []
-            list.push(recipe)
+            // 去重：同一个配方可能被多个产物引用（副产物场景下同一配方只存一次）
+            if (!list.find(r => r.className === recipe.className)) {
+              list.push(recipe)
+            }
             index.recipes.set(product.itemClass, list)
           }
 
           // 按原料索引：每种原料都能找到消耗它的配方
           for (const ing of recipe.ingredients) {
             const list = index.recipesByIngredient.get(ing.itemClass) ?? []
-            list.push(recipe)
+            if (!list.find(r => r.className === recipe.className)) {
+              list.push(recipe)
+            }
             index.recipesByIngredient.set(ing.itemClass, list)
           }
         }
+        break
+      }
+
+      /* ---------- 涂装/外观配方 ---------- */
+      // 解析但不索引到 recipes（外观定制，非生产配方）
+      case 'FGCustomizationRecipe': {
+        // 仅在调试时需要，正常运行无需处理
         break
       }
 
@@ -443,7 +504,17 @@ export function parseGameData(rawJson: unknown[]): DataIndex {
       case 'FGBuildingDescriptor': {
         for (const raw of classes) {
           const building = parseBuilding(raw)
-          if (building.className) index.buildings.set(building.className, building)
+          if (!building.className) continue
+          const key = building.className.replace(/_C$/, '').replace(/^Desc_/, 'Build_')
+          const existing = index.buildings.get(key)
+          if (existing) {
+            if (building.displayName) existing.displayName = building.displayName
+            if (building.description) existing.description = building.description
+            if (building.iconPath) existing.iconPath = building.iconPath
+            if (building.powerConsumption !== undefined) existing.powerConsumption = building.powerConsumption
+          } else {
+            index.buildings.set(key, { ...building, className: key })
+          }
         }
         break
       }

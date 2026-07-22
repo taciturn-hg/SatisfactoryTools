@@ -69,6 +69,23 @@ src/
 2. 运行 `python src/data/convert.py`
 3. 重启开发服务器
 
+## 图标更新
+
+当游戏更新导致新增或修改物品/建筑图标时：
+
+1. 使用最新版游戏资源打开 FModel。
+2. 在 Asset Search 中启用 Regex，并根据资源类型搜索对应的 `_UI` 目录。
+
+| 类型            | Regex                                                        |
+| --------------- | ------------------------------------------------------------ |
+| 物品（Parts）   | `^FactoryGame/Content/FactoryGame/Resource/Parts/.+/_UI/.+$`<br />`^FactoryGame/Content/FactoryGame/Resource/Parts/.+/UI/.+$` |
+| 矿物（Ores）    | `^FactoryGame/Content/FactoryGame/Resource/RawResources/.+/UI/.+$` |
+| 工厂（Factory） | `^FactoryGame/Content/FactoryGame/Buildable/Factory/.+/UI/.+$` |
+
+3. 筛选 `Texture2D` 资源，批量导出(`save texture`)为 PNG。
+4. 将导出的图片覆盖到 `src/assets/icons/` 对应目录。
+5. 若新增了物品或建筑，同时更新对应的数据文件（如 `items.json`、`buildings.json`）。
+
 ## 设计文档
 
 - [PRD](./.claude/PRD.md) — 产品需求文档
