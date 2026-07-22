@@ -123,7 +123,6 @@ function runPlan() {
     targetItemClass: outputItems.value[0]!,
     targetRate: getItemRate(outputItems.value[0]!),
     alternativeRecipes: buildAlternativeMap(),
-    byproductStrategy: 'discard',
     layoutDirection: 'horizontal',
     extractorConfig,
     inputItems: inputRates.value,

@@ -28,7 +28,7 @@
 | 解析状态 | 块数 | 说明 |
 |--------|------|------|
 | ✅ 已解析(items) | 12 | FGItem* + 弹药/消耗品/载具/装备描述符 |
-| ✅ 已解析(recipes) | 1 | FGRecipe（过滤掉手搓/建造枪配方） |
+| ✅ 已解析(recipes) | 1 | FGRecipe（排除 BP_ 开头的手搓/建造枪配方，包含装备工坊配方） |
 | ✅ 已解析(buildings) | 1 | FGBuildingDescriptor |
 | ✅ 已解析(generators) | 5 | 燃料/核/地热发电 + 外星增强器 + 蓄电池 |
 | ✅ 已解析(buildingNames) | 76 | 所有 FGBuildable* 块的中文建筑名 |
@@ -222,7 +222,7 @@
 | `mVariablePowerConsumptionConstant` | float | `"0.000000"` | 制造该物品时的固定功耗，单位 MW |
 | `mVariablePowerConsumptionFactor` | float | `"0.000000"` | 制造该物品时的可变功耗系数 |
 
-**过滤逻辑**：只索引 `producedIn` 包含工厂建筑（非 `BP_`/`WorkBench`/`BuildGun`）的配方。
+**过滤逻辑**：只索引 `producedIn` 包含工厂建筑（非 `BP_` 开头的玩家建筑/建造枪/手搓组件）的配方。装备工坊装备配方纳入索引，由后端引擎识别为装备工坊生产。
 
 #### FGCustomizationRecipe 字段说明（索引 7，106 条，显式跳过）
 
@@ -566,7 +566,7 @@ FGBuildable / FGBuildingDescriptor
 
 3. **`mIngredients` 和 `mProduct` 不是 JSON 数组**：它们是 UE 内联属性字符串，格式 `((ItemClass="path/ClassName.ClassName_C'",Amount=N),...)`，需要手写解析。Amount 可能为小数或大数（如液体配方 Amount=4000）
 
-4. **`mProducedIn` 也是 UE 格式**：用括号包裹，逗号分隔多个建筑 ClassName。注意有些条目是手搓工作台（`BP_WorkBenchComponent`），在计算机器数量时可忽略
+4. **`mProducedIn` 也是 UE 格式**：用括号包裹，逗号分隔多个建筑 ClassName。注意 `BP_` 开头的为手搓/建造枪组件（如 `BP_WorkBenchComponent`、`BP_WorkshopComponent`、`BP_BuildGun`），这些在计算机器数量时可忽略
 
 5. **配方可能没有原料或产物**：`mIngredients` 或 `mProduct` 可能为空字符串 `""`，解析后返回空数组。`FGCustomizationRecipe` 的这两个字段通常为空
 

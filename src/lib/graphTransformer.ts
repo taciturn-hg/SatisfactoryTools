@@ -23,20 +23,24 @@ function getNodeType(data: ProductionNode): string {
 
 /**
  * 格式化频率分配文本，如 [1, 1, 0.4] → "2×100%, 1×40%"
+ * 精度保留到小数点后 2 位，末尾.00省略
  */
 function formatClocks(clocks: number[]): string {
   if (clocks.length === 0) return ''
   const groups: { clock: number; count: number }[] = []
   for (const c of clocks) {
-    const rounded = Math.round(c * 100)
-    const existing = groups.find(g => Math.round(g.clock * 100) === rounded)
+    const pct = parseFloat((c * 100).toFixed(2))
+    const existing = groups.find(g => g.clock === pct)
     if (existing) {
       existing.count++
     } else {
-      groups.push({ clock: c, count: 1 })
+      groups.push({ clock: pct, count: 1 })
     }
   }
-  return groups.map(g => `${g.count}×${Math.round(g.clock * 100)}%`).join(', ')
+  return groups.map(g => {
+    const pct = g.clock % 1 === 0 ? String(g.clock) : g.clock.toFixed(2)
+    return `${g.count}×${pct}%`
+  }).join(', ')
 }
 
 /**
@@ -95,7 +99,7 @@ export function toVueFlowGraph(graph: ProductionGraph, index?: DataIndex): {
       itemIcon: node.isOutputTarget
         ? itemIconPath(node.itemClass, index)
         : node.machineType
-          ? buildingIconPath(node.machineType, index)
+          ? buildingIconPath(node.machineType, index) ?? itemIconPath(node.itemClass, index)
           : itemIconPath(node.itemClass, index),
       productName: node.itemName,
       clockInfo: formatClocks(node.machineClocks),

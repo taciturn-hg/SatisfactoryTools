@@ -74,13 +74,20 @@ src/
 当游戏更新导致新增或修改物品/建筑图标时：
 
 1. 使用最新版游戏资源打开 FModel。
-2. 在 Asset Search 中启用 Regex，并根据资源类型搜索对应的 `_UI` 目录。
 
-| 类型            | Regex                                                        |
-| --------------- | ------------------------------------------------------------ |
-| 物品（Parts）   | `^FactoryGame/Content/FactoryGame/Resource/Parts/.+/_UI/.+$`<br />`^FactoryGame/Content/FactoryGame/Resource/Parts/.+/UI/.+$` |
-| 矿物（Ores）    | `^FactoryGame/Content/FactoryGame/Resource/RawResources/.+/UI/.+$` |
-| 工厂（Factory） | `^FactoryGame/Content/FactoryGame/Buildable/Factory/.+/UI/.+$` |
+2. 在 Asset Search 中启用 Regex，并根据资源类型搜索对应的 `_UI/UI` 目录，以获取全部UI图片。
+
+   `^FactoryGame/Content/FactoryGame/.*/UI/[^/]+$`
+
+   `^FactoryGame/Content/FactoryGame/.+/.+/UI/.+$`
+
+   `^FactoryGame/Content/FactoryGame/.+/.+/.+/UI/.+$`
+
+   `^FactoryGame/Content/FactoryGame/.+/.+/.+/_UI/.+$`
+
+   `^FactoryGame/Content/FactoryGame/.+/.+/.+/.+/UI/.+$`
+
+   `FactoryGame/Content/FactoryGame/IconDesc_PortableMiner`（阴间便携式采矿机图标单独扔）
 
 3. 筛选 `Texture2D` 资源，批量导出(`save texture`)为 PNG。
 4. 将导出的图片覆盖到 `src/assets/icons/` 对应目录。

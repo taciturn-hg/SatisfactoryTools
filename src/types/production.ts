@@ -35,8 +35,16 @@ export interface ProductionGraph {
   edges: ProductionEdge[]
 }
 
-/** 副产物处理策略 */
-export type ByproductStrategy = 'discard' | 'utilize'
+/** 单次规划的参数 */
+export interface PlanOptions {
+  targetItemClass: string
+  targetRate: number
+  alternativeRecipes: Map<string, string>
+  layoutDirection: 'vertical' | 'horizontal'
+  extractorConfig?: ExtractorConfig
+  /** 用户输入的原料（itemClass → 提供速率），用于扣减图中的需求 */
+  inputItems?: Map<string, number>
+}
 
 /** 采矿机等级 */
 export type MinerLevel = 'mk1' | 'mk2' | 'mk3'
@@ -53,18 +61,6 @@ export interface ExtractorConfig {
   waterExtractor: 'water_extractor' | 'resource_well'
   waterPurity: NodePurity
   gasPurity: NodePurity
-}
-
-/** 单次规划的参数 */
-export interface PlanOptions {
-  targetItemClass: string
-  targetRate: number
-  alternativeRecipes: Map<string, string>
-  byproductStrategy: ByproductStrategy
-  layoutDirection: 'vertical' | 'horizontal'
-  extractorConfig?: ExtractorConfig
-  /** 用户输入的原料（itemClass → 提供速率），用于扣减图中的需求 */
-  inputItems?: Map<string, number>
 }
 
 /** 保存的规划方案 */

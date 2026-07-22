@@ -121,7 +121,7 @@ function recipesByIngredientArrayToMap(
 /* ==================== 读写接口 ==================== */
 
 /** 缓存版本标识，若 DataIndex 结构变化可通过此值触发重建缓存 */
-const CACHE_VERSION = 7
+const CACHE_VERSION = 8
 
 /** localStorage 中用于判断是否存在有效缓存的 key */
 const CACHE_META_KEY = 'SatisfactoryTools_cache_version'

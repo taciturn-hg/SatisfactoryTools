@@ -64,18 +64,18 @@ function parseStackSizeForm(raw: string): number {
 
 /** 从 UE 路径中提取相对于 assets/icons/ 的路径。
  *  输入: "Texture2D /Game/FactoryGame/Resource/Parts/IronPlate/UI/IconDesc_IronPlates_256.IconDesc_IronPlates_256"
- *  输出: "Resource/Parts/IronPlate/UI/IconDesc_IronPlates_256.png"
- *  取 FactoryGame/ 之后的部分，去掉末尾 .同名 后缀，补 .png */
+ *  输出: "FactoryGame/Resource/Parts/IronPlate/UI/IconDesc_IronPlates_256.png"
+ *  取 /Game/ 之后的部分，去掉末尾 .同名 后缀，补 .png */
 function extractIconPath(raw: string): string | undefined {
   if (!raw || raw === 'None') return undefined
   const path = raw.replace(/^Texture2D /, '').trim()
-  const idx = path.indexOf('FactoryGame/')
+  const idx = path.indexOf('/Game/')
   if (idx === -1) {
     // 降级：取末尾同名资源名
     const fallback = path.match(/\/([A-Za-z0-9_]+)\.\1$/)
     return fallback ? fallback[1]! + '.png' : undefined
   }
-  const relative = path.slice(idx + 'FactoryGame/'.length)
+  const relative = path.slice(idx + '/Game/'.length)
   // 去掉末尾 .同名 后缀，如 IconDesc_IronPlates_256.IconDesc_IronPlates_256 → IconDesc_IronPlates_256
   const cleaned = relative.replace(/([A-Za-z0-9_]+)\.\1$/, '$1')
   return cleaned + '.png'
@@ -225,7 +225,7 @@ function extractNativeClass(nativeClass: string): string {
  * 核燃料和能量碎片的额外字段（mSpentFuelClass、mPowerShardType 等）暂不提取，
  * 后续有需要时可通过 raw 扩展。
  */
-function parseItem(raw: Record<string, string>): GameItem {
+function parseItem(raw: Record<string, string>, isResource = false): GameItem {
   const displayName = raw.mDisplayName || ''
   const stackSizeRaw = raw.mCachedStackSize
     ? parseIntValue(raw.mCachedStackSize)
@@ -245,6 +245,7 @@ function parseItem(raw: Record<string, string>): GameItem {
       ? parseIntValue(raw.mResourceSinkPoints)
       : undefined,
     isAlienItem: raw.mIsAlienItem ? parseBoolean(raw.mIsAlienItem) : undefined,
+    isResource,
   }
 }
 
@@ -437,8 +438,15 @@ export function parseGameData(rawJson: unknown[]): DataIndex {
     switch (nativeClass) {
       /* ---------- 物品类块 ---------- */
       // 11 种物品相关描述符统一用 parseItem，字段结构兼容
+      case 'FGResourceDescriptor': {
+        for (const raw of classes) {
+          const item = parseItem(raw, true)
+          if (item.className) index.items.set(item.className, item)
+        }
+        break
+      }
+
       case 'FGItemDescriptor':
-      case 'FGResourceDescriptor':
       case 'FGItemDescriptorBiomass':
       case 'FGItemDescriptorNuclearFuel':
       case 'FGItemDescriptorPowerBoosterFuel':
@@ -464,9 +472,11 @@ export function parseGameData(rawJson: unknown[]): DataIndex {
           if (!recipe.className) continue
 
           // 跳过所有 producedIn 都是手搓/建造枪的配方（如墙体/地基等建筑配方）
+          // 手搓建筑：BP_WorkBenchComponent（制作台）、BP_BuildGun（建造枪）
+          // 注意：BP_WorkshopComponent（装备工坊）应视为工厂建筑
           if (recipe.producedIn.length > 0) {
             const hasFactory = recipe.producedIn.some(
-              (p) => !p.startsWith('BP_') && !p.includes('WorkBench') && !p.includes('BuildGun')
+              (p) => p !== 'BP_WorkBenchComponent' && p !== 'BP_BuildGun'
             )
             if (!hasFactory) continue
           }
@@ -536,6 +546,26 @@ export function parseGameData(rawJson: unknown[]): DataIndex {
       /* ---------- 无关块：跳过 ---------- */
       default:
         break
+    }
+  }
+
+  // ---- 后处理：归一化流体配方的 Amount ----
+  // 游戏数据中流体的 Amount 是 mL/内部单位，固体才是标准单位。
+  // 如燃料 Amount=4000 实际应为 4 m³，需除以 1000。
+  for (const [, recipes] of index.recipes) {
+    for (const recipe of recipes) {
+      for (const product of recipe.products) {
+        const item = index.items.get(product.itemClass)
+        if (item && (item.form === 'liquid' || item.form === 'gas') && product.amount >= 100) {
+          product.amount /= 1000
+        }
+      }
+      for (const ingredient of recipe.ingredients) {
+        const item = index.items.get(ingredient.itemClass)
+        if (item && (item.form === 'liquid' || item.form === 'gas') && ingredient.amount >= 100) {
+          ingredient.amount /= 1000
+        }
+      }
     }
   }
 

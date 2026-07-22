@@ -1,7 +1,7 @@
 /**
  * 规划状态管理（planStore）
  *
- * 职责：管理当前规划的目标物品、产量、选择的替代配方和副产物策略，
+ * 职责：管理当前规划的目标物品、产量、选择的替代配方，
  * 调用生产引擎计算并存储结果。
  *
  * 当前阶段：仅定义状态和方法结构，待阶段三完成后接入 productionEngine。
@@ -10,7 +10,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { PlanOptions, ProductionGraph } from '@/types'
-import type { ByproductStrategy } from '@/types'
 
 export const usePlanStore = defineStore('plan', () => {
   /* ==================== 状态 ==================== */
@@ -38,7 +37,6 @@ export const usePlanStore = defineStore('plan', () => {
         targetItemClass: '',
         targetRate: 0,
         alternativeRecipes: new Map(),
-        byproductStrategy: 'discard' as ByproductStrategy,
         layoutDirection: 'vertical',
       }),
       targetItemClass: itemClass,
@@ -54,14 +52,6 @@ export const usePlanStore = defineStore('plan', () => {
     const map = new Map(currentPlan.value.alternativeRecipes)
     map.set(itemClass, recipeClass)
     currentPlan.value = { ...currentPlan.value, alternativeRecipes: map }
-  }
-
-  /**
-   * 设置副产物处理策略
-   */
-  function setByproductStrategy(strategy: ByproductStrategy): void {
-    if (!currentPlan.value) return
-    currentPlan.value = { ...currentPlan.value, byproductStrategy: strategy }
   }
 
   /**
@@ -109,7 +99,6 @@ export const usePlanStore = defineStore('plan', () => {
     computeError,
     setTarget,
     selectAlternativeRecipe,
-    setByproductStrategy,
     setLayoutDirection,
     compute,
     reset,

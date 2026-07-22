@@ -21,6 +21,8 @@ export interface GameItem {
   resourceSinkPoints?: number
   isAlienItem?: boolean
   gameplayTags?: string
+  /** 是否为自然资源（矿石/水/原油/气体），此类物品不可通过配方制造 */
+  isResource: boolean
 }
 
 /** 制造配方 */

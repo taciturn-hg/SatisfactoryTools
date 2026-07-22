@@ -182,6 +182,26 @@ function addEdge(
 }
 
 /**
+ * 评估配方原料距离自然资源的远近程度。
+ *
+ * 评分规则：原料中直接为自然资源（isResource）或无配方的比例。
+ * 比例越高说明路径越短，应优先选择。
+ * 如燃料配方：原油→燃料（1/1=1）优于 重油残渣→燃料（0/1=0）。
+ */
+function recipeResourceScore(recipe: GameRecipe, index: DataIndex): number {
+  if (recipe.ingredients.length === 0) return 0
+  let resourceCount = 0
+  for (const ing of recipe.ingredients) {
+    const item = index.items.get(ing.itemClass)
+    // 是自然资源 或 没有任何配方（无配方等同不可制造的资源）
+    if (item?.isResource || !index.recipes.has(ing.itemClass)) {
+      resourceCount++
+    }
+  }
+  return resourceCount / recipe.ingredients.length
+}
+
+/**
  * 选择指定物品的配方。
  * 用户指定了替代配方则优先使用，否则使用第一个标准配方。
  * 若无任何配方返回 null（该物品是基础资源）。
@@ -205,15 +225,33 @@ function selectRecipe(
     : undefined
   if (selected) return selected
 
+  // 自然资源（矿石/水/原油/气体）固定为叶子节点，不可通过配方展开
+  // 除非用户通过 alternatives 明确选择了配方（已在上面返回）
+  const item = index.items.get(itemClass)
+  if (item?.isResource) return null
+
   // 过滤 Converter 配方，避免基础资源被 Converter 配方展开
   const factoryCandidates = allCandidates.filter(
     r => !r.producedIn.some(p => p === 'Build_Converter')
   )
   if (factoryCandidates.length === 0) return null
 
-  // 先找用户指定的
-  const standard = factoryCandidates.find(r => !r.isAlternate)
-  if (standard) return standard
+  // 在所有标准配方中，选原料距自然资源最短的路径
+  // 评分规则：原料中自然资源占比越高 → 路径越短
+  const standards = factoryCandidates.filter(r => !r.isAlternate)
+  if (standards.length > 0) {
+    let best = standards[0]!
+    let bestScore = recipeResourceScore(best, index)
+
+    for (let i = 1; i < standards.length; i++) {
+      const score = recipeResourceScore(standards[i]!, index)
+      if (score > bestScore) {
+        best = standards[i]!
+        bestScore = score
+      }
+    }
+    return best
+  }
 
   // 全是替代配方（如煤的木炭、生物煤）→ 不展开，视为资源
   return null
@@ -262,16 +300,22 @@ export function planProduction(index: DataIndex, options: PlanOptions): Producti
 
     node.recipeUsed = recipe
 
-    // 从 producedIn 中选第一个实际生产建筑（跳过 BP_ 前缀、工作台、建造枪）
+    // 从 producedIn 中选第一个实际生产建筑（跳过制作台手搓/建造枪）
+    // 注意：BP_WorkshopComponent（装备工坊）应视为工厂建筑
     node.machineType = null
     for (const p of recipe.producedIn) {
-      if (p && !p.startsWith('BP_') && !p.includes('WorkBench') && !p.includes('BuildGun')) {
+      if (p && p !== 'BP_WorkBenchComponent' && p !== 'BP_BuildGun') {
         node.machineType = p
         break
       }
     }
     if (!node.machineType) {
       node.machineType = recipe.producedIn[0] ?? null
+    }
+
+    // 将 BP_WorkshopComponent（装备工坊手搓组件）映射为 Build_Workshop 以获取中文名
+    if (node.machineType === 'BP_WorkshopComponent') {
+      node.machineType = 'Build_Workshop'
     }
 
     const mainProduct = recipe.products.find(p => p.itemClass === node.itemClass)
@@ -289,10 +333,9 @@ export function planProduction(index: DataIndex, options: PlanOptions): Producti
     // 有效总频率 = clock 数组元素之和（降频时 < 时钟数）
     const totalClock = group.clocks.reduce((s, c) => s + c, 0)
 
-    // 处理副产物
+    // 处理副产物 — 默认始终展示
     for (const product of recipe.products) {
       if (product.itemClass === node.itemClass) continue
-      if (options.byproductStrategy === 'discard') continue
 
       const byproductRate = ratePerMinute(product.amount, recipe.manufactoringDuration) * totalClock
       const byproductNode = addNode(graph, {
