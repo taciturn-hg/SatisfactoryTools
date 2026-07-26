@@ -31,10 +31,11 @@ export function useProductionPlan() {
       const bld = index.buildings.get(data.machineType)
       const p = bld?.powerConsumption
       if (!p) continue
-      // 游戏功率公式：实际功率 = 基础功率 × sum(clock_i^1.6)
-      // 生产建筑固定使用 1.6 指数
+      // 游戏功率公式：实际功率 = 基础功率 × sum(clock_i^exponent)
+      // 生产建筑默认使用 1.6 指数，部分建筑可能不同（如抽水站 1.0）
+      const exponent = bld?.powerConsumptionExponent ?? 1.6
       for (const c of data.machineClocks) {
-        power += p * Math.pow(c, 1.6)
+        power += p * Math.pow(c, exponent)
       }
     }
     const rounded = Math.round(power * 10) / 10

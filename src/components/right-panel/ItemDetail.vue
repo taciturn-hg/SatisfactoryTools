@@ -33,13 +33,7 @@ function onRateChange(e: Event) {
   if (raw === '') return
   const val = Number(raw)
   if (!Number.isFinite(val) || val < 0) return
-  // 0 < rate < 1 时取 1 避免被父组件删除（否则 Math.floor(0.8) = 0 触发删除）
-  const floored = Math.floor(val)
-  if (floored === 0 && val > 0) {
-    emit('update:rate', props.itemValue, 1)
-  } else {
-    emit('update:rate', props.itemValue, floored)
-  }
+  emit('update:rate', props.itemValue, val)
 }
 
 function onDelete() {

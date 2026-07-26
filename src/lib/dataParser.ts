@@ -295,6 +295,9 @@ function parseBuilding(raw: Record<string, string>): GameBuilding {
     powerConsumption: raw.mPowerConsumption
       ? parseFloatValue(raw.mPowerConsumption)
       : undefined,
+    powerConsumptionExponent: raw.mPowerConsumptionExponent
+      ? parseFloatValue(raw.mPowerConsumptionExponent)
+      : undefined,
     cachedStackSize: raw.mCachedStackSize
       ? parseIntValue(raw.mCachedStackSize)
       : undefined,

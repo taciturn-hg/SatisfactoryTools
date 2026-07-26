@@ -45,6 +45,8 @@ export interface GameBuilding {
   description: string
   iconPath?: string
   powerConsumption?: number
+  /** 功率指数，用于超频时计算实际电力消耗：实际功率 = 基础功率 × Σ(clock^exponent) */
+  powerConsumptionExponent?: number
   cachedStackSize?: number
 }
 

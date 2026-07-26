@@ -406,6 +406,9 @@ export function planProduction(index: DataIndex, options: PlanOptions): Producti
 
   mergeDuplicateNodes(graph, index, options)
   applyInputItems(graph, index, options)
+  if (options.byproductRecycling) {
+    applyByproductRecycling(graph, index, options)
+  }
   applyOverclock(graph, index, options)
 
   // 将根节点拆分为机器节点 + 目标产出展示节点
@@ -597,7 +600,7 @@ function reduceNodeRate(
   options: PlanOptions,
   reduceBy: number,
 ): void {
-  const newRate = Math.max(0, node.rate - reduceBy)
+  const newRate = Number(Math.max(0, node.rate - reduceBy).toFixed(4))
 
   if (newRate <= 0) {
     removeNodeAndUpstream(node, graph)
@@ -615,19 +618,27 @@ function reduceNodeRate(
     node.machineCount = group.machineCount
     node.machineClocks = group.clocks
 
-    // 按新 machineCount 重新计算每个原料的需求量，直接减到上游
-    // 同时更新该节点所有出边的 flowRate，保持出入流量一致
     const totalClock = group.clocks.reduce((s, c) => s + c, 0)
+
+    // 更新出边（主产物取 node.rate，副产物按 totalClock 算）
     for (const edge of graph.edges) {
       if (edge.sourceNodeId !== node.id) continue
-      edge.flowRate = ratePerMinute(
-        node.recipeUsed!.products.find(p => p.itemClass === edge.itemClass)?.amount ?? 0,
-        node.recipeUsed!.manufactoringDuration,
-      ) * totalClock
+      if (edge.itemClass === node.itemClass) {
+        edge.flowRate = node.rate
+      } else {
+        edge.flowRate = ratePerMinute(
+          node.recipeUsed!.products.find(p => p.itemClass === edge.itemClass)?.amount ?? 0,
+          node.recipeUsed!.manufactoringDuration,
+        ) * totalClock
+      }
     }
 
+    // 原料需求用量比推算：ingredientAmount / mainProductAmount * node.rate
+    // 避免 totalClock × perMachineRate 因 toFixed(4) 截断导致的精度误差
     for (const ingredient of node.recipeUsed.ingredients) {
-      const newIngredientRate = ratePerMinute(ingredient.amount, node.recipeUsed.manufactoringDuration) * totalClock
+      const newIngredientRate = Number(
+        (node.rate * (ingredient.amount / mainProduct.amount)).toFixed(4),
+      )
 
       const edge = graph.edges.find(
         e => e.targetNodeId === node.id && e.itemClass === ingredient.itemClass
@@ -691,6 +702,91 @@ function removeNodeAndUpstream(node: ProductionNode, graph: ProductionGraph): vo
   graph.nodes = graph.nodes.filter(n => !toRemove.has(n.id))
 }
 
+/* ==================== 副产物回灌 ==================== */
+
+/**
+ * 副产物自循环：将副产物节点回灌到有对应原料需求的消费节点，
+ * 扣减外部供应，实现产线内部循环利用。
+ *
+ * 对每个副产物：
+ *   1. 找到生产者节点（产出该副产物的配方节点）
+ *   2. 找到需要该物品的消费者（目标节点）及其需求量
+ *   3. 按比例分配副产物，从生产者→消费者添加回灌边
+ *   4. 扣减对应消费者的外部供应边及上游节点速率
+ *   5. 全部分配完毕则删除副产物节点，否则更新剩余量
+ */
+function applyByproductRecycling(
+  graph: ProductionGraph,
+  index: DataIndex,
+  options: PlanOptions,
+): void {
+  const byproducts = graph.nodes.filter(n => n.isByproduct && n.rate > 0.005)
+  if (!byproducts.length) return
+
+  for (const bp of byproducts) {
+    // 找到生产者节点（谁产出了这个副产物）
+    const producerEdge = graph.edges.find(e => e.targetNodeId === bp.id)
+    if (!producerEdge) continue
+    const producerId = producerEdge.sourceNodeId
+
+    // 找到所有消费该物品的边（排除生产者自身的边和 byproduct 节点本身）
+    const demandEdges = graph.edges.filter(
+      e => e.itemClass === bp.itemClass
+        && e.targetNodeId !== bp.id
+        && e.sourceNodeId !== producerId,
+    )
+    if (!demandEdges.length) continue
+
+    // 按消费者分组计算需求
+    const consumerMap = new Map<string, number>()
+    for (const e of demandEdges) {
+      consumerMap.set(e.targetNodeId, (consumerMap.get(e.targetNodeId) ?? 0) + e.flowRate)
+    }
+
+    const totalDemand = Array.from(consumerMap.values()).reduce((s, v) => s + v, 0)
+    const allocRate = Math.min(bp.rate, totalDemand)
+
+    // 按比例分配
+    for (const [consumerId, consumerDemand] of consumerMap) {
+      const portion = allocRate * (consumerDemand / totalDemand)
+      const trimmed = Number(portion.toFixed(4))
+      if (trimmed <= 0.005) continue
+
+      // 从生产者到消费者添加回灌边
+      addEdge(graph, producerId, consumerId, trimmed, bp.itemClass)
+
+      // 扣减该消费者的外部供应边
+      const externalEdges = graph.edges.filter(
+        e => e.targetNodeId === consumerId
+          && e.itemClass === bp.itemClass
+          && e.sourceNodeId !== producerId,
+      )
+      for (const extEdge of externalEdges) {
+        const reduceBy = Math.min(trimmed, extEdge.flowRate)
+        extEdge.flowRate = Number((extEdge.flowRate - reduceBy).toFixed(4))
+
+        // 递归缩减上游
+        const upstreamNode = graph.nodes.find(n => n.id === extEdge.sourceNodeId)
+        if (upstreamNode && !upstreamNode.isByproduct) {
+          reduceNodeRate(upstreamNode, graph, index, options, reduceBy)
+        }
+      }
+    }
+
+    // 处理副产物节点剩余
+    const remaining = Number((bp.rate - allocRate).toFixed(4))
+    if (remaining <= 0.005) {
+      graph.edges = graph.edges.filter(e =>
+        e.sourceNodeId !== producerId || e.targetNodeId !== bp.id,
+      )
+      graph.nodes = graph.nodes.filter(n => n.id !== bp.id)
+    } else {
+      bp.rate = remaining
+      producerEdge.flowRate = remaining
+    }
+  }
+}
+
 /* ==================== 超频分配 ==================== */
 
 /**
@@ -713,12 +809,11 @@ function getNodePerMachineRate(
 /**
  * 将可用能量碎片分配给生产节点。
  *
- * 两阶段分配：
- *  阶段一：叶子节点（资源采集器）优先，每个节点按需分配碎片
- *  阶段二：剩余碎片分配给中间节点，按原始机台数降序
- *
- * 每台机器最多 3 碎片（250%），碎片按机器逐台分配，确保总消耗不超库存。
- * 如：3 碎片 → 1 台 250%，剩余需求用无碎片机器补足。
+ * 分配分三步：
+ *  第 1 步：资源采集器（叶子节点）— 堆 250%，不省碎片
+ *  第 2 步：降频节点 — 给刚好消除降频的最小碎片数
+ *  第 3 步：所有非叶子节点合流（降频修复后的 + 无降频的），按 rawCount 降序，
+ *           再次参与分配（step 3 覆盖 step 2 的结果，合并为一次完整的 calcNodeClocks）
  */
 function applyOverclock(
   graph: ProductionGraph,
@@ -733,12 +828,11 @@ function applyOverclock(
   )
   if (prodNodes.length === 0) return
 
-  // 判断叶子节点：prodNodes 中 recipeUsed===null 的必然是资源采集器
   const demands: { node: ProductionNode; rawCount: number; baseRate: number; isLeaf: boolean }[] = []
   for (const node of prodNodes) {
     const baseRate = getNodePerMachineRate(node, index, options)
     if (!baseRate || baseRate <= 0) continue
-    const rawCount = node.rate / baseRate
+    const rawCount = Number((node.rate / baseRate).toFixed(4))
     if (rawCount > 1) {
       demands.push({ node, rawCount, baseRate, isLeaf: !node.recipeUsed })
     }
@@ -746,51 +840,180 @@ function applyOverclock(
 
   if (demands.length === 0) return
 
-  demands.sort((a, b) => {
-    if (a.isLeaf !== b.isLeaf) return a.isLeaf ? -1 : 1
-    return b.rawCount - a.rawCount
-  })
+  // 分组
+  const leaf: typeof demands = []
+  const nonLeafWithFraction: typeof demands = []
+  const nonLeafNoFraction: typeof demands = []
+
+  for (const d of demands) {
+    if (d.isLeaf) {
+      leaf.push(d)
+    } else if (d.rawCount % 1 > 0.005) {
+      nonLeafWithFraction.push(d)
+    } else {
+      nonLeafNoFraction.push(d)
+    }
+  }
 
   let remaining = totalShards
 
-  for (const { node, baseRate } of demands) {
+  // ··· 第 1 轮：叶子节点 ···
+  leaf.sort((a, b) => b.rawCount - a.rawCount)
+  for (const d of leaf) {
     if (remaining <= 0) break
+    const { clocks, shardsUsed } = calcLeafNodeClocks(d.rawCount, remaining)
+    d.node.machineClocks = clocks
+    d.node.machineCount = clocks.length
+    remaining -= shardsUsed
+  }
+
+  // ··· 第 2 轮：降频节点，消除降频 ···
+  // 算出消除每个降频节点的最小碎片数，按 rawCount 降序分配
+  // 跳过以下区间：0~25%（降频成本低不值得）、50~75%（投入回报低不值得）
+  // 注意：Phase 2 只设置 clocks 但不消耗 remaining，Phase 3 才是最终分配者，
+  // 避免 Phase 2 消耗的碎片在 Phase 3 中被重复计入而浪费。
+  nonLeafWithFraction.sort((a, b) => b.rawCount - a.rawCount)
+  for (const d of nonLeafWithFraction) {
+    if (remaining <= 0) break
+    const fraction = d.rawCount % 1
+    if (fraction <= 0.25 || (fraction > 0.50 && fraction <= 0.75)) continue
+    const minShards = Math.ceil(2 * fraction)
+    if (minShards > remaining) continue
+    const { clocks } = calcNodeClocks(d.rawCount, minShards, false)
+    d.node.machineClocks = clocks
+    d.node.machineCount = clocks.length
+  }
+
+  // ··· 第 3 轮：所有非叶子节点合流，分配剩余碎片 ···
+  const allNonLeaf = [...nonLeafWithFraction, ...nonLeafNoFraction]
+  allNonLeaf.sort((a, b) => b.rawCount - a.rawCount)
+  for (const d of allNonLeaf) {
+    if (remaining <= 0) break
+    const { clocks, shardsUsed } = calcNodeClocks(d.rawCount, remaining, false)
+    d.node.machineClocks = clocks
+    d.node.machineCount = clocks.length
+    remaining -= shardsUsed
+  }
+}
+
+/**
+ * 对单个节点计算最优的机器频率分配。
+ *
+ * 叶子节点（采集器）：一个资源节点只能放一台采集器，必须全量压到 250%，
+ *   以减少节点占用为最高目标，不节省碎片。
+ *   如 rawCount=3.2：3碎片→1×250%+1×70% 优先于 2碎片→2×150%+1×20%
+ *
+ * 非叶子节点（生产建筑）：在可用碎片内取机器数和碎片数的平衡，
+ *   碎片均匀分配避免浪费。
+ *   如 rawCount=8：
+ *     8 碎片 → 4×200%      （vs 贪心 3×250%+1×50% 浪费 1）
+ *     4 碎片 → 4×150%+2×100%
+ *     2 碎片 → 2×150%+5×100%
+ */
+function calcNodeClocks(
+  rawCountRaw: number,
+  shardsAvailable: number,
+  isLeaf: boolean,
+): { clocks: number[]; shardsUsed: number } {
+  const rawCount = Number(rawCountRaw.toFixed(4))
+  if (rawCount <= 1) {
+    return { clocks: [Number(rawCount.toFixed(4))], shardsUsed: 0 }
+  }
+
+  if (isLeaf) {
+    // 叶子节点：堆满 250%，不考虑省碎片
+    return calcLeafNodeClocks(rawCount, shardsAvailable)
+  }
+
+  // 非叶子节点：从最少机器往上试，在可用碎片内取最优平衡
+  const maxMachines = Math.ceil(rawCount)
+  const minMachines = Math.max(1, Math.ceil(rawCount / 2.5))
+
+  for (let m = minMachines; m <= maxMachines; m++) {
+    const shardsNeeded = Math.max(0, Math.ceil(2 * (rawCount - m)))
+    if (shardsNeeded > shardsAvailable) continue
+
+    const maxShardsPerMachine = m * 3
+    if (shardsNeeded > maxShardsPerMachine) continue
+
+    const perMachine = Math.floor(shardsNeeded / m)
+    const extra = shardsNeeded % m
 
     const clocks: number[] = []
-    let unmet = node.rate
-
-    // 阶段一：尽可能用 3 碎片跑 250% 机器
-    while (remaining >= 3 && unmet > baseRate * 2.5 + 0.005) {
-      clocks.push(2.5)
-      unmet -= baseRate * 2.5
-      remaining -= 3
+    for (let i = 0; i < m; i++) {
+      const s = perMachine + (i < extra ? 1 : 0)
+      clocks.push(1 + 0.5 * s)
     }
 
-    // 阶段二：用剩余 1-2 碎片跑 150%/200%
-    if (remaining >= 1 && unmet > baseRate + 0.005) {
-      const shardCount = Math.min(remaining, 3)
-      const clock = 1 + shardCount * 0.5
-      clocks.push(clock)
-      unmet -= baseRate * clock
-      remaining -= shardCount
+    // 如果总产能超出 rawCount，微调最后一台降频
+    const total = clocks.reduce((sum, c) => sum + c, 0)
+    if (total > rawCount + 0.001) {
+      const excess = total - rawCount
+      clocks[m - 1] = Number((clocks[m - 1]! - excess).toFixed(4))
     }
 
-    // 阶段三：无碎片机器补足剩余需求，最后一台降频
-    if (unmet > 0.005) {
-      const full100 = Math.floor(unmet / baseRate)
-      for (let i = 0; i < full100; i++) clocks.push(1)
-      unmet -= full100 * baseRate
-      const remainderFraction = unmet / baseRate
-      if (remainderFraction > 0.005) {
-        clocks.push(Number(remainderFraction.toFixed(4)))
-      } else if (remainderFraction > 0 && clocks.length > 0) {
-        clocks[clocks.length - 1] = Number((clocks[clocks.length - 1]! + remainderFraction).toFixed(4))
-      }
-    }
-
-    node.machineClocks = clocks
-    node.machineCount = clocks.length > 0
-      ? clocks.reduce((s, c) => s + c, 0)
-      : node.machineCount
+    return { clocks, shardsUsed: shardsNeeded }
   }
+
+  // 无可用碎片时的默认分配
+  return calcDefaultClocks(rawCount)
+}
+
+/**
+ * 叶子节点：优先减少机器数量，堆 250% 不省碎片。
+ */
+function calcLeafNodeClocks(
+  rawCountRaw: number,
+  shardsAvailable: number,
+): { clocks: number[]; shardsUsed: number } {
+  const rawCount = Number(rawCountRaw.toFixed(4))
+  const clocks: number[] = []
+  let unmet = rawCount
+  let remaining = shardsAvailable
+
+  while (remaining >= 3 && unmet > 2.5 + 0.005) {
+    clocks.push(2.5)
+    unmet -= 2.5
+    remaining -= 3
+  }
+
+  if (remaining >= 1 && unmet > 1 + 0.005) {
+    const shardCount = Math.min(remaining, 3)
+    const clock = 1 + shardCount * 0.5
+    clocks.push(clock)
+    unmet -= clock
+    remaining -= shardCount
+  }
+
+  if (unmet > 0.005) {
+    const full100 = Math.floor(unmet)
+    for (let i = 0; i < full100; i++) clocks.push(1)
+    unmet -= full100
+    if (unmet > 0.005) {
+      clocks.push(Number(unmet.toFixed(4)))
+    } else if (unmet > 0 && clocks.length > 0) {
+      clocks[clocks.length - 1] = Number((clocks[clocks.length - 1]! + unmet).toFixed(4))
+    }
+  }
+
+  return {
+    clocks,
+    shardsUsed: shardsAvailable - remaining,
+  }
+}
+
+/**
+ * 无碎片时的默认降频分配。
+ */
+function calcDefaultClocks(rawCount: number): { clocks: number[]; shardsUsed: number } {
+  const clocks: number[] = []
+  const fullMachines = Math.floor(rawCount)
+  for (let i = 0; i < fullMachines; i++) clocks.push(1)
+  const remainder = rawCount - fullMachines
+  if (remainder > 0.005) {
+    clocks.push(Number(remainder.toFixed(4)))
+  } else if (remainder > 0 && clocks.length > 0) {
+    clocks[clocks.length - 1] = Number((clocks[clocks.length - 1]! + remainder).toFixed(4))
+  }
+  return { clocks, shardsUsed: 0 }
 }

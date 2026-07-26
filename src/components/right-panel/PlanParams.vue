@@ -66,11 +66,14 @@ const pipeSpeed = ref<string>('')
 const powerShardCount = ref(0)
 const somerCount = ref(0)
 
+// 副产物循环
+const byproductRecycling = ref<string>('on')
+
 // 任一配置变更时通知父组件
 watch(
   [selectedRecipes, selectedConverter, minerLevel, minerPurity,
    oilExtractor, oilPurity, waterExtractor, waterPurity, gasPurity,
-   powerShardCount],
+   powerShardCount, byproductRecycling],
   () => emit('change'),
 )
 
@@ -89,6 +92,7 @@ defineExpose({
   pipeSpeed,
   powerShardCount,
   somerCount,
+  byproductRecycling,
 })
 </script>
 
@@ -340,6 +344,22 @@ defineExpose({
     <div class="param-section">
       <div class="param-label">可用的索莫晶体</div>
       <input type="number" class="param-input" v-model.number="somerCount" min="0" step="1" />
+    </div>
+
+    <div class="section-divider" />
+
+    <div class="section-title">副产物</div>
+    <div class="param-section">
+      <div class="radio-group">
+        <label class="radio-item">
+          <input type="radio" value="on" v-model="byproductRecycling" />
+          <span>循环利用</span>
+        </label>
+        <label class="radio-item">
+          <input type="radio" value="off" v-model="byproductRecycling" />
+          <span>忽略副产物</span>
+        </label>
+      </div>
     </div>
 
     <div class="section-bottom-spacer" />

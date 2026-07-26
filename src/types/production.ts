@@ -47,6 +47,8 @@ export interface PlanOptions {
 
   /** 可用于超频的能量碎片数量 */
   powerShards?: number
+  /** 是否启用副产物自循环，默认关闭 */
+  byproductRecycling?: boolean
 }
 
 /** 采矿机等级 */
