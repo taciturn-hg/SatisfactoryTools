@@ -389,20 +389,26 @@ export function planProduction(index: DataIndex, options: PlanOptions): Producti
     ancestors.delete(node.itemClass)
   }
 
-  // 根节点：目标产品
-  const rootNode = addNode(graph, {
-    itemClass: options.targetItemClass,
-    itemName: index.items.get(options.targetItemClass)?.displayName || options.targetItemClass,
-    rate: options.targetRate,
-    recipeUsed: null,
-    machineCount: 0,
-    machineClocks: [],
-    machineType: null,
-    depth: 0,
-    isByproduct: false,
-  })
+  // 构建目标列表（兼容多目标与单目标）
+  const targets = options.targetItems?.length
+    ? options.targetItems
+    : [{ itemClass: options.targetItemClass, rate: options.targetRate }]
 
-  expand(rootNode, new Set())
+  // 展开每个目标，各自独立检测循环依赖
+  for (const t of targets) {
+    const rootNode = addNode(graph, {
+      itemClass: t.itemClass,
+      itemName: index.items.get(t.itemClass)?.displayName || t.itemClass,
+      rate: t.rate,
+      recipeUsed: null,
+      machineCount: 0,
+      machineClocks: [],
+      machineType: null,
+      depth: 0,
+      isByproduct: false,
+    })
+    expand(rootNode, new Set())
+  }
 
   mergeDuplicateNodes(graph, index, options)
   applyInputItems(graph, index, options)
@@ -411,11 +417,14 @@ export function planProduction(index: DataIndex, options: PlanOptions): Producti
   }
   applyOverclock(graph, index, options)
 
-  // 将根节点拆分为机器节点 + 目标产出展示节点
-  const planRoot = graph.nodes.find(n => n.depth === 0 && !n.isUnused && !n.isByproduct)
-  if (planRoot && (planRoot.recipeUsed || planRoot.machineType)) {
-    const outputNode: ProductionNode = {
-      id: nextId(),
+  // 为每个深度 0 的生产节点添加目标产出展示节点
+  // 合并后同物品多目标已自动归并为一个节点
+  const outputTargets = graph.nodes.filter(
+    n => n.depth === 0 && !n.isUnused && !n.isByproduct && n.rate > 0.005,
+  )
+  for (const planRoot of outputTargets) {
+    if (!planRoot.recipeUsed && !planRoot.machineType) continue
+    const outputNode = addNode(graph, {
       itemClass: planRoot.itemClass,
       itemName: planRoot.itemName,
       rate: planRoot.rate,
@@ -426,8 +435,7 @@ export function planProduction(index: DataIndex, options: PlanOptions): Producti
       depth: 0,
       isByproduct: false,
       isOutputTarget: true,
-    }
-    graph.nodes.push(outputNode)
+    })
     addEdge(graph, planRoot.id, outputNode.id, planRoot.rate, planRoot.itemClass)
   }
 

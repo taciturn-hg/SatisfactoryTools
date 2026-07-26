@@ -39,6 +39,8 @@ export interface ProductionGraph {
 export interface PlanOptions {
   targetItemClass: string
   targetRate: number
+  /** 多目标产出（支持同时规划多个物品），为空时使用 targetItemClass/targetRate */
+  targetItems?: { itemClass: string; rate: number }[]
   alternativeRecipes: Map<string, string>
   layoutDirection: 'vertical' | 'horizontal'
   extractorConfig?: ExtractorConfig

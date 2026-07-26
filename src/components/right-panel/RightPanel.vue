@@ -120,6 +120,10 @@ function runPlan() {
   }
 
   const graph = planProduction(dataStore.index, {
+    targetItems: outputItems.value.map(itemClass => ({
+      itemClass,
+      rate: getItemRate(itemClass),
+    })),
     targetItemClass: outputItems.value[0]!,
     targetRate: getItemRate(outputItems.value[0]!),
     alternativeRecipes: buildAlternativeMap(),
