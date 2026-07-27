@@ -10,6 +10,7 @@
  */
 
 import dagre from 'dagre'
+import type { GraphLabel } from 'dagre'
 import type { ProductionGraph } from '@/types'
 
 const NODE_WIDTH = 200
@@ -67,7 +68,7 @@ export function autoLayout(
     marginx: 40,
     marginy: 40,
     splines: 'orthogonal',
-  })
+  } as GraphLabel & Record<string, unknown>)
 
   // 注册节点
   for (const node of graph.nodes) {
