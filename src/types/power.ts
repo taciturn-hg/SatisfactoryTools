@@ -19,10 +19,10 @@ export interface PowerPlanOptions {
   generatorClass: string
   /** 选择的燃料 ClassName */
   fuelClass: string
-  /** 超频倍率（1.0 = 100%） */
-  overclockRatio: number
-  /** 能量碎片数量（可选） */
-  powerShardCount?: number
+  /** 可用能量碎片数量（超频用） */
+  powerShards?: number
+  /** 是否允许降频（不足一台时降频 vs 直接加一台） */
+  allowUnderclock?: boolean
 }
 
 /** 发电计划计算结果 */
@@ -43,4 +43,6 @@ export interface PowerPlanResult {
   byproductClass: string
   /** 实际使用的超频倍率 */
   overclockRatio: number
+  /** 每台发电机的频率分配，如 [2.5, 2.5, 0.7] 表示 2 台 250% + 1 台 70% */
+  machineClocks: number[]
 }

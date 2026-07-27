@@ -30,7 +30,7 @@ function isOverclocked(clocks: number[]): boolean {
  * 格式化频率分配文本，如 [1, 1, 0.4] → "2×100%, 1×40%"
  * 精度保留到小数点后 2 位，末尾.00省略
  */
-function formatClocks(clocks: number[]): string {
+export function formatClocks(clocks: number[]): string {
   if (clocks.length === 0) return ''
   const groups: { clock: number; count: number }[] = []
   for (const c of clocks) {

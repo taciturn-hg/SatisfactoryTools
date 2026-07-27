@@ -9,7 +9,7 @@
 - **流程图可视化** — 以可交互的节点图展示生产链，支持拖拽、缩放、点击详情
 - **替代配方** — 同一物品有多个配方时可自由选择
 - **副产物处理** — 支持丢弃或利用配方副产物
-- **发电计划** (规划中) — 选择发电机类型与燃料，计算所需数量与消耗
+- **发电计划** — 选择发电机类型与燃料，计算所需数量与消耗
 - **方案管理** (规划中) — 本地保存/加载/导出/导入规划方案
 
 ## 技术栈
@@ -17,26 +17,39 @@
 | 类别 | 技术 |
 |------|------|
 | 框架 | Vue 3 (Composition API, `<script setup>`) |
-| 语言 | TypeScript |
+| 语言 | TypeScript (strict mode) |
 | 构建 | Vite 8 |
 | 状态管理 | Pinia |
-| 路由 | Vue Router |
+| 路由 | Vue Router (hash mode) |
 | UI 组件库 | Ant Design Vue 4.x |
 | 流程图 | Vue Flow 1.x |
 | 图布局 | Dagre |
 | 数据持久化 | Dexie (IndexedDB) / localStorage |
-| 代码规范 | ESLint + Oxlint + Prettier |
+| 代码规范 | ESLint 10 + Oxlint + Prettier |
 
 ## 快速开始
 
 ```sh
 npm install
-npm run dev        # 开发服务器（热更新）
-npm run build      # 类型检查 + 生产构建
-npm run type-check # 仅类型检查
-npm run lint       # 代码检查
-npm run format     # 代码格式化
+npm run dev         # 开发服务器（热更新）
+npm run build       # 类型检查 + 生产构建
+npm run type-check  # 仅类型检查
+npm run lint        # 代码检查
+npm run format      # 代码格式化
+npm run deploy      # 构建并部署到 GitHub Pages
 ```
+
+## 部署
+
+项目通过 GitHub Pages 部署，Vite 配置了 `base: '/SatisfactoryTools/'`，路由使用 hash 模式 (`createWebHashHistory`) 以确保兼容性。
+
+部署命令：
+
+```sh
+npm run deploy
+```
+
+该命令使用 `gh-pages` 将生产构建产物推送到 `gh-pages` 分支。
 
 ## 项目结构
 
@@ -87,11 +100,12 @@ src/
 
    `^FactoryGame/Content/FactoryGame/.+/.+/.+/.+/UI/.+$`
 
-   `FactoryGame/Content/FactoryGame/IconDesc_PortableMiner`（阴间便携式采矿机图标单独扔）
+   `FactoryGame/Content/FactoryGame/IconDesc_PortableMiner`（阴间便携式采矿机图标需单独下载）
 
-3. 筛选 `Texture2D` 资源，批量导出(`save texture`)为 PNG。
-4. 将导出的图片覆盖到 `src/assets/icons/` 对应目录。
-5. 若新增了物品或建筑，同时更新对应的数据文件（如 `items.json`、`buildings.json`）。
+3. 全选搜索出的图片，批量导出(`save texture`)为 PNG。
+4. 到FModel的根目录下，找到这个路径`Output\Exports\FactoryGame\Content`下的`FactoryGame`文件夹
+5. 将上述文件夹复制并覆盖到项目里面 `src/assets/icons/`下。
+6. 若新增了物品或建筑，同时更新对应的数据文件（如 `items.json`、`buildings.json`）。
 
 ## 设计文档
 

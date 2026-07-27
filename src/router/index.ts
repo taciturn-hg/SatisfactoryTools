@@ -1,7 +1,11 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHashHistory, createWebHistory } from 'vue-router'
 
 const router = createRouter({
-  history: createWebHistory(import.meta.env.BASE_URL),
+  // 服务器部署（Nginx 等）
+  // history: createWebHistory(import.meta.env.BASE_URL),
+
+  // GitHub Pages 静态部署时改用：
+  history: createWebHashHistory(import.meta.env.BASE_URL),
   routes: [
     {
       path: '/',
