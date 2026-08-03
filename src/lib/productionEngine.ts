@@ -239,10 +239,33 @@ function selectRecipe(
   if (item?.isResource) return null
 
   // 过滤 Converter 配方，避免基础资源被 Converter 配方展开
-  const factoryCandidates = allCandidates.filter(
+  let factoryCandidates = allCandidates.filter(
     r => !r.producedIn.some(p => p === 'Build_Converter')
   )
+
+  // 过滤解包配方（Recipe_Unpackage*）：反向推导永远不应通过「桶装→流体」解包来生产。
+  // 桶装流体用打包配方生产，空桶/空瓶用制造配方生产，解包配方只会引入配方循环
+  // （如空桶选 Recipe_UnpackageAlumina 需桶装氧化铝溶液，而桶装又需空桶）。
+  // 仅当某物品只有解包配方时才保留，避免误判为不可制造。
+  const nonUnpackage = factoryCandidates.filter(
+    r => !r.className.startsWith('Recipe_Unpackage')
+  )
+  if (nonUnpackage.length > 0) factoryCandidates = nonUnpackage
+
   if (factoryCandidates.length === 0) return null
+
+  // 优先选「目标物品是主产物（products[0]）」的配方，避免把目标物品当副产物来生产。
+  // 例如外部补足二氧化硅时应选 Recipe_Silica_C（粗石英→二氧化硅），
+  // 而不是 Recipe_AluminaSolution_C（铝土矿+水→氧化铝溶液+二氧化硅，二氧化硅只是副产物，
+  // 会把氧化铝溶液重新引入产线纠缠）。
+  // 仅当主产物候选中含标准配方时才优先使用；
+  // 若主产物全是替代配方（如重油残渣只有 Recipe_Alternate_HeavyOilResidue_C 是主产物配方），
+  // 回退到原候选集，让把目标当副产物的标准配方（塑料/橡胶产线）仍可被选中。
+  const mainProductCandidates = factoryCandidates.filter(
+    r => r.products[0]?.itemClass === itemClass
+  )
+  const mainStandards = mainProductCandidates.filter(r => !r.isAlternate)
+  if (mainStandards.length > 0) factoryCandidates = mainStandards
 
   // 在所有标准配方中，选原料距自然资源最短的路径
   // 评分规则：原料中自然资源占比越高 → 路径越短
@@ -389,10 +412,12 @@ export function planProduction(index: DataIndex, options: PlanOptions): Producti
     ancestors.delete(node.itemClass)
   }
 
-  // 构建目标列表（兼容多目标与单目标）
+  // 构建目标列表（兼容多目标与单目标；无产出目标时为空，仅显示用户输入的原料节点）
   const targets = options.targetItems?.length
     ? options.targetItems
-    : [{ itemClass: options.targetItemClass, rate: options.targetRate }]
+    : options.targetItemClass
+      ? [{ itemClass: options.targetItemClass, rate: options.targetRate }]
+      : []
 
   // 展开每个目标，各自独立检测循环依赖
   for (const t of targets) {
@@ -411,10 +436,12 @@ export function planProduction(index: DataIndex, options: PlanOptions): Producti
   }
 
   mergeDuplicateNodes(graph, index, options)
-  applyInputItems(graph, index, options)
+  // 先做副产物自循环（副产物回灌扣减净需求），再应用用户输入的原料，
+  // 否则输入原料会先扣减尚未回灌时的需求，导致净缺口算错。
   if (options.byproductRecycling) {
     applyByproductRecycling(graph, index, options)
   }
+  applyInputItems(graph, index, options)
   applyOverclock(graph, index, options)
 
   // 为每个深度 0 的生产节点添加目标产出展示节点
@@ -564,7 +591,8 @@ function applyInputItems(
     }
     graph.nodes.push(inputNode)
 
-    // 找生产该物品的节点（优先非副产物，回退到副产物）
+    // 找生产该物品的节点（优先非副产物，回退到副产物）。
+    // 副产物循环已回灌内部需求，这里定位的是可被输入替代的外部供给节点。
     let producerNode = graph.nodes.find(
       n => n.itemClass === itemClass && !n.isByproduct && !n.isUnused
     )
@@ -575,31 +603,39 @@ function applyInputItems(
     }
     if (!producerNode) continue
 
-    // 找所有消耗该物品的消费者（入边 itemClass 匹配的 target）
-    const consumerEdges = graph.edges.filter(e => e.itemClass === itemClass && e.targetNodeId !== producerNode.id)
-    const distinctConsumers = [...new Set(consumerEdges.map(e => e.targetNodeId))]
-    const totalNeeded = consumerEdges.reduce((s, e) => s + e.flowRate, 0)
+    // 输入替代该供给节点的出边消费者（而非所有入边的 target，
+    // 避免把副产物入边/回灌边误算为需求导致分流错误）。
+    // 只统计与输入同物品的出边，排除该节点产出的副产物边（如氧化铝溶液节点的二氧化硅副产边）。
+    const supplyEdges = graph.edges.filter(
+      e => e.sourceNodeId === producerNode.id && e.itemClass === itemClass
+    )
+    const distinctConsumers = [...new Set(supplyEdges.map(e => e.targetNodeId))]
+    const totalSupply = supplyEdges.reduce((s, e) => s + e.flowRate, 0)
 
-    if (totalNeeded > 0) {
+    if (totalSupply > 0) {
+      // 输入量超出供给时截断到实际可替代量
+      const used = Math.min(providedRate, totalSupply)
       for (const consumerId of distinctConsumers) {
-        const consumerTotal = consumerEdges
+        const consumerTotal = supplyEdges
           .filter(e => e.targetNodeId === consumerId)
           .reduce((s, e) => s + e.flowRate, 0)
-        const portion = providedRate * (consumerTotal / totalNeeded)
+        const portion = used * (consumerTotal / totalSupply)
         addEdge(graph, inputNode.id, consumerId, portion, itemClass)
       }
+      // 只扣减实际使用的量
+      reduceNodeRate(producerNode, graph, index, options, used)
     } else {
       // 无消费者 → 直接连到生产者（视为消耗自身的示意）
       addEdge(graph, inputNode.id, producerNode.id, providedRate, itemClass)
+      reduceNodeRate(producerNode, graph, index, options, providedRate)
     }
-
-    // 扣减生产节点的需求
-    reduceNodeRate(producerNode, graph, index, options, providedRate)
   }
 }
 
 /**
  * 递归扣减节点 rate，重算台数，并向上游回溯缩减。
+ *
+ * 图可能存在环（如暗物质↔暗能量的互相消耗），visited 防止沿环无限递归。
  */
 function reduceNodeRate(
   node: ProductionNode,
@@ -608,6 +644,21 @@ function reduceNodeRate(
   options: PlanOptions,
   reduceBy: number,
 ): void {
+  const visited = new Set<string>()
+  reduceNodeRateInner(node, graph, index, options, reduceBy, visited)
+}
+
+function reduceNodeRateInner(
+  node: ProductionNode,
+  graph: ProductionGraph,
+  index: DataIndex,
+  options: PlanOptions,
+  reduceBy: number,
+  visited: Set<string>,
+): void {
+  if (visited.has(node.id)) return
+  visited.add(node.id)
+
   const newRate = Number(Math.max(0, node.rate - reduceBy).toFixed(4))
 
   if (newRate <= 0) {
@@ -634,10 +685,15 @@ function reduceNodeRate(
       if (edge.itemClass === node.itemClass) {
         edge.flowRate = node.rate
       } else {
-        edge.flowRate = ratePerMinute(
+        const byRate = ratePerMinute(
           node.recipeUsed!.products.find(p => p.itemClass === edge.itemClass)?.amount ?? 0,
           node.recipeUsed!.manufactoringDuration,
         ) * totalClock
+        edge.flowRate = byRate
+        // 同步副产物节点的 rate，保持「副产节点 ⇄ 产生边」一致，
+        // 否则副产物回灌会按失配的 rate 分配导致负流量
+        const byNode = graph.nodes.find(n => n.id === edge.targetNodeId && n.isByproduct)
+        if (byNode) byNode.rate = byRate
       }
     }
 
@@ -659,10 +715,16 @@ function reduceNodeRate(
       const sourceNode = graph.nodes.find(n => n.id === edge.sourceNodeId)
       if (!sourceNode || sourceNode.isByproduct) continue
 
-      reduceNodeRate(sourceNode, graph, index, options, oldIngredientRate - newIngredientRate)
+      reduceNodeRateInner(sourceNode, graph, index, options, oldIngredientRate - newIngredientRate, visited)
     }
   } else {
-    // 资源节点（采集器），只需更新台数
+    // 资源节点（采集器），只需更新台数与出边速率
+    // （输入原料部分替代资源时，rate 降低但出边仍为旧值，需同步）
+    for (const edge of graph.edges) {
+      if (edge.sourceNodeId === node.id && edge.itemClass === node.itemClass) {
+        edge.flowRate = node.rate
+      }
+    }
     const extractor = resolveResourceExtractor(node.itemClass, index, options.extractorConfig)
     if (extractor) {
       const group = calcMachineGroup(node.rate, extractor.perMachineRate)
@@ -713,15 +775,17 @@ function removeNodeAndUpstream(node: ProductionNode, graph: ProductionGraph): vo
 /* ==================== 副产物回灌 ==================== */
 
 /**
- * 副产物自循环：将副产物节点回灌到有对应原料需求的消费节点，
- * 扣减外部供应，实现产线内部循环利用。
+ * 副产物自循环：将配方节点的副产物直接回灌到有对应原料需求的消费节点，
+ * 扣减外部供应，实现「优先用副产物、不足再由外部产线补足」。
  *
  * 对每个副产物：
- *   1. 找到生产者节点（产出该副产物的配方节点）
- *   2. 找到需要该物品的消费者（目标节点）及其需求量
- *   3. 按比例分配副产物，从生产者→消费者添加回灌边
+ *   1. 找到所有产出该副产物的配方节点（多条产生边）
+ *   2. 找到需要该物品的消费者及其需求量
+ *   3. 回灌边从产生方节点**直接连到消费者**（不经过副产物中转节点），
+ *      多个产生方按产生流量占比分配
  *   4. 扣减对应消费者的外部供应边及上游节点速率
- *   5. 全部分配完毕则删除副产物节点，否则更新剩余量
+ *   5. 副产物被全部利用时删除副产物节点与产生边；
+ *      有多余时才保留副产物节点展示剩余量
  */
 function applyByproductRecycling(
   graph: ProductionGraph,
@@ -732,16 +796,18 @@ function applyByproductRecycling(
   if (!byproducts.length) return
 
   for (const bp of byproducts) {
-    // 找到生产者节点（谁产出了这个副产物）
-    const producerEdge = graph.edges.find(e => e.targetNodeId === bp.id)
-    if (!producerEdge) continue
-    const producerId = producerEdge.sourceNodeId
+    // 找到所有产出该副产物的产生边（多个配方可产出同一副产物）
+    const producerEdges = graph.edges.filter(e => e.targetNodeId === bp.id)
+    if (!producerEdges.length) continue
+    const producerIds = new Set(producerEdges.map(e => e.sourceNodeId))
+    const totalProduced = producerEdges.reduce((s, e) => s + e.flowRate, 0)
 
-    // 找到所有消费该物品的边（排除生产者自身的边和 byproduct 节点本身）
+    // 找到所有消费该物品的边（排除产生边与副产物节点自身）
     const demandEdges = graph.edges.filter(
       e => e.itemClass === bp.itemClass
         && e.targetNodeId !== bp.id
-        && e.sourceNodeId !== producerId,
+        && e.sourceNodeId !== bp.id
+        && !producerIds.has(e.sourceNodeId),
     )
     if (!demandEdges.length) continue
 
@@ -752,7 +818,7 @@ function applyByproductRecycling(
     }
 
     const totalDemand = Array.from(consumerMap.values()).reduce((s, v) => s + v, 0)
-    const allocRate = Math.min(bp.rate, totalDemand)
+    const allocRate = Math.min(totalProduced, totalDemand)
 
     // 按比例分配
     for (const [consumerId, consumerDemand] of consumerMap) {
@@ -760,14 +826,20 @@ function applyByproductRecycling(
       const trimmed = Number(portion.toFixed(4))
       if (trimmed <= 0.005) continue
 
-      // 从生产者到消费者添加回灌边
-      addEdge(graph, producerId, consumerId, trimmed, bp.itemClass)
+      // 回灌边从产生方直接连到消费者，多个产生方按产生流量占比分配
+      for (const pe of producerEdges) {
+        const pePortion = Number((trimmed * (pe.flowRate / totalProduced)).toFixed(4))
+        if (pePortion > 0.005) {
+          addEdge(graph, pe.sourceNodeId, consumerId, pePortion, bp.itemClass)
+        }
+      }
 
-      // 扣减该消费者的外部供应边
+      // 扣减该消费者的外部供应边（副产物替代外部供给，优先利用副产物）
       const externalEdges = graph.edges.filter(
         e => e.targetNodeId === consumerId
           && e.itemClass === bp.itemClass
-          && e.sourceNodeId !== producerId,
+          && e.sourceNodeId !== bp.id
+          && !producerIds.has(e.sourceNodeId),
       )
       for (const extEdge of externalEdges) {
         const reduceBy = Math.min(trimmed, extEdge.flowRate)
@@ -781,16 +853,19 @@ function applyByproductRecycling(
       }
     }
 
-    // 处理副产物节点剩余
-    const remaining = Number((bp.rate - allocRate).toFixed(4))
-    if (remaining <= 0.005) {
-      graph.edges = graph.edges.filter(e =>
-        e.sourceNodeId !== producerId || e.targetNodeId !== bp.id,
-      )
+    // 结算：副产物被全部利用 → 删除副产物节点与产生边，不留中转
+    if (allocRate >= totalProduced - 0.005) {
       graph.nodes = graph.nodes.filter(n => n.id !== bp.id)
+      graph.edges = graph.edges.filter(
+        e => e.targetNodeId !== bp.id && e.sourceNodeId !== bp.id,
+      )
     } else {
-      bp.rate = remaining
-      producerEdge.flowRate = remaining
+      // 有多余副产物（产生 > 需求）：按产生方比例缩减各产生边，保留节点展示剩余量
+      const leftoverRatio = (totalProduced - allocRate) / totalProduced
+      for (const pe of producerEdges) {
+        pe.flowRate = Number((pe.flowRate * leftoverRatio).toFixed(4))
+      }
+      bp.rate = Number((totalProduced - allocRate).toFixed(4))
     }
   }
 }
@@ -968,7 +1043,12 @@ function calcNodeClocks(
 }
 
 /**
- * 叶子节点：优先减少机器数量，堆 250% 不省碎片。
+ * 叶子节点：优先减少机器数量，按实际需求设定每台频率。
+ *
+ * 策略：用 250% 填满整台机器以最小化台数；剩余需求按实际值设定频率，
+ * 碎片仅用于抬高频率上限，不按 50% 阶段向上取值。
+ *   如 rawCount=1.8、3 碎片 → [1.8]（2 碎片，精确 180%），而非 [2.5]（超产）
+ *   如 rawCount=2.6、6 碎片 → [2.5, 0.1]（总产 2.6 精确），而非 [2.5, 0.5]
  */
 function calcLeafNodeClocks(
   rawCountRaw: number,
@@ -979,20 +1059,32 @@ function calcLeafNodeClocks(
   let unmet = rawCount
   let remaining = shardsAvailable
 
+  // 用 250% 填满整台机器，最小化台数（每台需要 3 碎片）
   while (remaining >= 3 && unmet > 2.5 + 0.005) {
     clocks.push(2.5)
     unmet -= 2.5
     remaining -= 3
   }
 
+  // 最后一台（或唯一一台）机器：碎片只用于抬高上限，频率精确按需求
   if (remaining >= 1 && unmet > 1 + 0.005) {
-    const shardCount = Math.min(remaining, 3)
-    const clock = 1 + shardCount * 0.5
-    clocks.push(clock)
-    unmet -= clock
-    remaining -= shardCount
+    const shardsNeeded = Math.ceil((unmet - 1) / 0.5)
+    if (shardsNeeded <= remaining && shardsNeeded <= 3) {
+      // 碎片足以覆盖需求 → 频率精确等于需求，不多用碎片
+      clocks.push(Number(unmet.toFixed(4)))
+      remaining -= shardsNeeded
+      unmet = 0
+    } else {
+      // 碎片不足以覆盖 → 用尽可用碎片提升上限，剩余需求由后续机器补齐
+      const used = Math.min(remaining, 3)
+      const clock = 1 + used * 0.5
+      clocks.push(clock)
+      unmet -= clock
+      remaining -= used
+    }
   }
 
+  // 剩余不足 1 台的部分：整台 100% + 精确降频
   if (unmet > 0.005) {
     const full100 = Math.floor(unmet)
     for (let i = 0; i < full100; i++) clocks.push(1)
