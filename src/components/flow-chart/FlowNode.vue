@@ -34,7 +34,7 @@ const borderColor = computed(() => {
 })
 
 const borderStyle = computed(() =>
-  props.data.type === 'byproduct' || props.data.type === 'unused'
+  props.data.type === 'byproduct'
     ? 'dashed'
     : 'solid'
 )

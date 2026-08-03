@@ -17,7 +17,6 @@ function getNodeType(data: ProductionNode): string {
   if (data.isUnused) return 'unused'
   if (data.isByproduct) return 'byproduct'
   if (data.recipeUsed === null) return 'resource'
-  if (data.depth === 0) return 'intermediate'
   return 'intermediate'
 }
 
@@ -114,14 +113,63 @@ export function toVueFlowGraph(graph: ProductionGraph, index?: DataIndex): {
     },
   }))
 
-  const edges: Edge[] = graph.edges.map(edge => ({
-    id: edge.id,
-    source: edge.sourceNodeId,
-    target: edge.targetNodeId,
-    label: `${index?.items.get(edge.itemClass)?.displayName || edge.itemClass} ${formatRate(edge.flowRate)}/min`,
-    type: 'default',
-    animated: true,
-  }))
+  // 合并双向边：同对节点间的反向边（如副产物回灌边与主料边）合并为一条双向箭头边，
+  // 避免 dagre 布局把两条反向边垂直错开成交叉 X 型、中间标签重叠。
+  // 例：氧化铝溶液 ⇄ 碎铝渣（氧化铝溶液 240/min → 碎铝渣，水 120/min → 氧化铝溶液）
+  // 按有向对分组收集边，同一方向的多条边（如配方产出多个副产物都流向同一消费者）
+  // 全部计入双向边的 label，不丢弃任何一条。
+  const grouped = new Map<string, typeof graph.edges[number][]>()
+  for (const e of graph.edges) {
+    const k = `${e.sourceNodeId}→${e.targetNodeId}`
+    const list = grouped.get(k) ?? []
+    list.push(e)
+    grouped.set(k, list)
+  }
+
+  const edges: Edge[] = []
+  const emitted = new Set<string>()
+  for (const [fk, forwardList] of grouped) {
+    const [s, t] = fk.split('→') as [string, string]
+    const rk = `${t}→${s}`
+    const backwardList = grouped.get(rk)
+
+    if (!backwardList) {
+      // 纯单向边：各自渲染
+      for (const e of forwardList) {
+        edges.push({
+          id: e.id,
+          source: e.sourceNodeId,
+          target: e.targetNodeId,
+          label: `${index?.items.get(e.itemClass)?.displayName || e.itemClass} ${formatRate(e.flowRate)}/min`,
+          type: 'default',
+          animated: true,
+        })
+      }
+      continue
+    }
+
+    // 双向对：仅在字典序较小的方向处理一次，避免重复
+    const canonical = fk < rk
+    if (!canonical || emitted.has(rk)) continue
+    emitted.add(fk)
+    emitted.add(rk)
+
+    const fmtSide = (list: typeof graph.edges[number][]) =>
+      list
+        .map(e => `${index?.items.get(e.itemClass)?.displayName || e.itemClass} ${formatRate(e.flowRate)}/min`)
+        .join(', ')
+
+    edges.push({
+      id: `bi${s}-${t}`,
+      source: s,
+      target: t,
+      label: `${fmtSide(forwardList)} ⇄ ${fmtSide(backwardList)}`,
+      type: 'default',
+      animated: true,
+      markerStart: 'arrow',
+      markerEnd: 'arrow',
+    })
+  }
 
   return { nodes, edges }
 }
