@@ -1,7 +1,7 @@
-diff --git a/lib/git.js b/lib/git.js
+diff --git a/node_modules/gh-pages/lib/git.js b/node_modules/gh-pages/lib/git.js
 index d4c5724..05378f5 100644
---- a/lib/git.js
-+++ b/lib/git.js
+--- a/node_modules/gh-pages/lib/git.js
++++ b/node_modules/gh-pages/lib/git.js
 @@ -139,11 +139,8 @@ Git.prototype.checkout = function (remote, branch) {
   * @param {string | Array<string>} files Files argument.
   * @return {Promise} A promise.
