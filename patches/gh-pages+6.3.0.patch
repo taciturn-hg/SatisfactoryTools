@@ -1,9 +1,9 @@
 diff --git a/lib/git.js b/lib/git.js
-index 57d58f5..3be4b88 100644
+index d4c5724..05378f5 100644
 --- a/lib/git.js
 +++ b/lib/git.js
-@@ -139,11 +139,7 @@ Git.prototype.exec = function () {
-  * Remove all unversioned files.
+@@ -139,11 +139,8 @@ Git.prototype.checkout = function (remote, branch) {
+  * @param {string | Array<string>} files Files argument.
   * @return {Promise} A promise.
   */
 -Git.prototype.rm = function (files) {
@@ -14,3 +14,5 @@ index 57d58f5..3be4b88 100644
 +Git.prototype.rm = function () {
 +  return this.exec('rm', '--ignore-unmatch', '-r', '-f', '--', '.');
  };
+ 
+ /**
