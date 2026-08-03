@@ -43,7 +43,17 @@ npm run deploy      # 构建并部署到 GitHub Pages
 
 项目通过 GitHub Pages 部署，Vite 配置了 `base: '/SatisfactoryTools/'`，路由使用 hash 模式 (`createWebHashHistory`) 以确保兼容性。
 
-部署命令：
+### 自动部署（推荐）
+
+推送代码到 `dev` 分支时，GitHub Actions 工作流（`.github/workflows/deploy.yml`）会自动构建并部署到 `gh-pages` 分支：
+
+```sh
+git push origin dev
+```
+
+无需手动操作，推送后等待 Actions 运行完成即可访问站点。
+
+### 手动部署
 
 ```sh
 npm run deploy
