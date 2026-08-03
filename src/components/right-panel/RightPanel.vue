@@ -6,6 +6,7 @@ import { autoLayout } from '@/lib/layoutHelper'
 import ItemDetail from '@/components/right-panel/ItemDetail.vue'
 import PlanParams from '@/components/right-panel/PlanParams.vue'
 import PlanActions from '@/components/right-panel/PlanActions.vue'
+import { getIconUrl } from '@/lib/iconRegistry'
 import type { ProductionGraph, ExtractorConfig } from '@/types'
 
 const emit = defineEmits<{
@@ -103,7 +104,8 @@ const paramsRef = ref<InstanceType<typeof PlanParams> | null>(null)
 
 function runPlan() {
   if (!dataStore.index) return
-  if (!outputItems.value.length) {
+  // 无产出且无输入原料时清空画布；只输入原料时也允许渲染节点
+  if (!outputItems.value.length && !inputRates.value.size) {
     emit('reset')
     return
   }
@@ -124,8 +126,8 @@ function runPlan() {
       itemClass,
       rate: getItemRate(itemClass),
     })),
-    targetItemClass: outputItems.value[0]!,
-    targetRate: getItemRate(outputItems.value[0]!),
+    targetItemClass: outputItems.value[0] ?? '',
+    targetRate: getItemRate(outputItems.value[0] ?? ''),
     alternativeRecipes: buildAlternativeMap(),
     layoutDirection: 'horizontal',
     extractorConfig,
@@ -155,6 +157,7 @@ const allItems = computed(() => {
   return dataStore.allItems.map((item) => ({
     value: item.className,
     label: item.displayName,
+    icon: item.smallIcon ? getIconUrl(item.smallIcon) : undefined,
   }))
 })
 
@@ -219,7 +222,15 @@ const availableItems = computed(() =>
               :filter-option="(input: string, option: { label: string }) => option.label.toLowerCase().includes(input.toLowerCase())"
               style="width: 100%"
               :getPopupContainer="(trigger: HTMLElement) => trigger.parentElement"
-            />
+            >
+              <template #option="{ label, icon }">
+                <div class="option-item">
+                  <img v-if="icon" :src="icon" alt="" class="option-item-icon" />
+                  <span v-else class="option-item-icon option-item-icon-placeholder">■</span>
+                  <span class="option-item-label">{{ label }}</span>
+                </div>
+              </template>
+            </a-select>
             <button class="btn-add" :disabled="!selectedItem" @click="addItem">＋</button>
           </div>
         </div>
@@ -250,7 +261,15 @@ const availableItems = computed(() =>
               :filter-option="(input: string, option: { label: string }) => option.label.toLowerCase().includes(input.toLowerCase())"
               style="width: 100%"
               :getPopupContainer="(trigger: HTMLElement) => trigger.parentElement"
-            />
+            >
+              <template #option="{ label, icon }">
+                <div class="option-item">
+                  <img v-if="icon" :src="icon" alt="" class="option-item-icon" />
+                  <span v-else class="option-item-icon option-item-icon-placeholder">■</span>
+                  <span class="option-item-label">{{ label }}</span>
+                </div>
+              </template>
+            </a-select>
             <button class="btn-add" :disabled="!selectedItem" @click="addItem">＋</button>
           </div>
         </div>
@@ -357,6 +376,34 @@ const availableItems = computed(() =>
   border-color: var(--color-primary);
   background: var(--color-primary);
   color: #fff;
+}
+
+.option-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.option-item-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.option-item-icon-placeholder {
+  color: var(--text-muted);
+}
+.option-item-label {
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .item-list-placeholder,

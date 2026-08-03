@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
 import { RouterView } from 'vue-router'
+import { ConfigProvider, theme } from 'ant-design-vue'
 import AppHeader from '@/components/common/AppHeader.vue'
 import { useDataStore } from '@/stores/dataStore'
 
@@ -12,12 +13,14 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="app-layout">
-    <AppHeader />
-    <main class="app-main">
-      <RouterView />
-    </main>
-  </div>
+  <ConfigProvider :theme="{ algorithm: theme.darkAlgorithm }">
+    <div class="app-layout">
+      <AppHeader />
+      <main class="app-main">
+        <RouterView />
+      </main>
+    </div>
+  </ConfigProvider>
 </template>
 
 <style scoped>
