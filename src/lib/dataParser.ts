@@ -257,17 +257,30 @@ function parseItem(raw: Record<string, string>, isResource = false): GameItem {
  * - mProducedIn：UE 括号字符串数组 → parseUEProducedIn()
  * - 替代配方识别：ClassName 以 Recipe_Alternate_ 开头
  */
-function parseRecipe(raw: Record<string, string>): GameRecipe {
+
+function parseRecipe(raw: Record<string, string>, index: DataIndex): GameRecipe {
   const className = raw.ClassName ?? ''
+  const products = parseUEItemAmountPairs(raw.mProduct ?? '')
+
+  // 替代配方识别：ClassName 以 Recipe_Alternate_ 开头。但存在命名历史遗留——
+  // 少数配方带 Alternate_ 前缀、实为游戏原生配方（如涡轮燃油、压缩煤），
+  // 若按前缀判定会把它们当替代配方，导致默认配方、下拉排序、配置页替代列表错乱。
+  // 启发式：唯一产物且配方显示名（去掉「替代：」前缀）与该产物显示名一致，
+  // 则视为原生配方（真正的替代配方命名不会与唯一主产物同名）。
+  const isAlternate = className.startsWith('Recipe_Alternate_') && !(
+    products.length === 1
+    && index.items.get(products[0]!.itemClass)?.displayName
+      === (raw.mDisplayName || '').replace(/^替代[:：]?\s*/, '')
+  )
 
   return {
     className,
     displayName: raw.mDisplayName || '',
     ingredients: parseUEItemAmountPairs(raw.mIngredients ?? ''),
-    products: parseUEItemAmountPairs(raw.mProduct ?? ''),
+    products,
     manufactoringDuration: parseFloatValue(raw.mManufactoringDuration ?? '1'),
     producedIn: parseUEProducedIn(raw.mProducedIn ?? ''),
-    isAlternate: className.startsWith('Recipe_Alternate_'),
+    isAlternate,
     variablePowerConsumptionConstant: raw.mVariablePowerConsumptionConstant
       ? parseFloatValue(raw.mVariablePowerConsumptionConstant)
       : undefined,
@@ -407,6 +420,8 @@ export function parseGameData(rawJson: unknown[]): DataIndex {
     generators: new Map(),
   }
 
+  // 第一遍：填充 items / buildings / generators（recipes 第二遍处理，
+  // 因为 parseRecipe 需要根据 items 的显示名用启发式识别原生配方）
   for (const block of rawJson) {
     // 每个块必须有 NativeClass 和 Classes 字段
     const nativeClass = extractNativeClass(String((block as Record<string, unknown>).NativeClass ?? ''))
@@ -467,52 +482,6 @@ export function parseGameData(rawJson: unknown[]): DataIndex {
         break
       }
 
-      /* ---------- 配方块 ---------- */
-      // 只索引有实际生产建筑的制造配方（排除手搓/建造枪配方）
-      case 'FGRecipe': {
-        for (const raw of classes) {
-          const recipe = parseRecipe(raw)
-          if (!recipe.className) continue
-
-          // 跳过所有 producedIn 都是手搓/建造枪的配方（如墙体/地基等建筑配方）
-          // 手搓建筑：BP_WorkBenchComponent（制作台）、BP_BuildGun（建造枪）
-          // 注意：BP_WorkshopComponent（装备工坊）应视为工厂建筑
-          if (recipe.producedIn.length > 0) {
-            const hasFactory = recipe.producedIn.some(
-              (p) => p !== 'BP_WorkBenchComponent' && p !== 'BP_BuildGun'
-            )
-            if (!hasFactory) continue
-          }
-
-          // 按产物索引：每种产出物品都能找到这个配方
-          for (const product of recipe.products) {
-            const list = index.recipes.get(product.itemClass) ?? []
-            // 去重：同一个配方可能被多个产物引用（副产物场景下同一配方只存一次）
-            if (!list.find(r => r.className === recipe.className)) {
-              list.push(recipe)
-            }
-            index.recipes.set(product.itemClass, list)
-          }
-
-          // 按原料索引：每种原料都能找到消耗它的配方
-          for (const ing of recipe.ingredients) {
-            const list = index.recipesByIngredient.get(ing.itemClass) ?? []
-            if (!list.find(r => r.className === recipe.className)) {
-              list.push(recipe)
-            }
-            index.recipesByIngredient.set(ing.itemClass, list)
-          }
-        }
-        break
-      }
-
-      /* ---------- 涂装/外观配方 ---------- */
-      // 解析但不索引到 recipes（外观定制，非生产配方）
-      case 'FGCustomizationRecipe': {
-        // 仅在调试时需要，正常运行无需处理
-        break
-      }
-
       /* ---------- 建筑描述符块 ---------- */
       case 'FGBuildingDescriptor': {
         for (const raw of classes) {
@@ -549,6 +518,48 @@ export function parseGameData(rawJson: unknown[]): DataIndex {
       /* ---------- 无关块：跳过 ---------- */
       default:
         break
+    }
+  }
+
+  // 第二遍：解析配方（此时 index.items 已填充，可识别原生配方）
+  for (const block of rawJson) {
+    const nativeClass = extractNativeClass(String((block as Record<string, unknown>).NativeClass ?? ''))
+    if (nativeClass !== 'FGRecipe') continue
+    const classes = (block as Record<string, unknown>).Classes as Record<string, string>[]
+    if (!classes || !Array.isArray(classes)) continue
+
+    for (const raw of classes) {
+      const recipe = parseRecipe(raw, index)
+      if (!recipe.className) continue
+
+      // 跳过所有 producedIn 都是手搓/建造枪的配方（如墙体/地基等建筑配方）
+      // 手搓建筑：BP_WorkBenchComponent（制作台）、BP_BuildGun（建造枪）
+      // 注意：BP_WorkshopComponent（装备工坊）应视为工厂建筑
+      if (recipe.producedIn.length > 0) {
+        const hasFactory = recipe.producedIn.some(
+          (p) => p !== 'BP_WorkBenchComponent' && p !== 'BP_BuildGun'
+        )
+        if (!hasFactory) continue
+      }
+
+      // 按产物索引：每种产出物品都能找到这个配方
+      for (const product of recipe.products) {
+        const list = index.recipes.get(product.itemClass) ?? []
+        // 去重：同一个配方可能被多个产物引用（副产物场景下同一配方只存一次）
+        if (!list.find(r => r.className === recipe.className)) {
+          list.push(recipe)
+        }
+        index.recipes.set(product.itemClass, list)
+      }
+
+      // 按原料索引：每种原料都能找到消耗它的配方
+      for (const ing of recipe.ingredients) {
+        const list = index.recipesByIngredient.get(ing.itemClass) ?? []
+        if (!list.find(r => r.className === recipe.className)) {
+          list.push(recipe)
+        }
+        index.recipesByIngredient.set(ing.itemClass, list)
+      }
     }
   }
 

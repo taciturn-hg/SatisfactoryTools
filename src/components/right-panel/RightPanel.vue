@@ -7,7 +7,7 @@ import ItemDetail from '@/components/right-panel/ItemDetail.vue'
 import PlanParams from '@/components/right-panel/PlanParams.vue'
 import PlanActions from '@/components/right-panel/PlanActions.vue'
 import { getIconUrl } from '@/lib/iconRegistry'
-import type { ProductionGraph, ExtractorConfig } from '@/types'
+import type { ProductionGraph, ExtractorConfig, GameRecipe } from '@/types'
 
 const emit = defineEmits<{
   graphReady: [graph: ProductionGraph]
@@ -22,6 +22,98 @@ const outputItems = ref<string[]>([])
 const inputItems = ref<string[]>([])
 const outputRates = ref(new Map<string, number>())
 const inputRates = ref(new Map<string, number>())
+
+/** 按产出物品选定的配方（未含项 = 该产出用默认原生配方） */
+const outputRecipes = ref(new Map<string, string>())
+
+/** 配方下拉中单个原料/产物条目 */
+interface RecipeIoItem {
+  name: string
+  icon?: string
+  rate: number
+}
+
+/** 配方下拉选项（含原料/产物详情，供 #option 插槽渲染） */
+interface RecipeOption {
+  value: string
+  label: string
+  displayName: string
+  ingredients: RecipeIoItem[]
+  products: RecipeIoItem[]
+}
+
+function itemDisplayName(itemClass: string): string {
+  return dataStore.index?.items.get(itemClass)?.displayName ?? itemClass
+}
+
+function itemIcon(itemClass: string): string | undefined {
+  const icon = dataStore.index?.items.get(itemClass)?.smallIcon
+  return icon ? getIconUrl(icon) : undefined
+}
+
+/** 配方原料/产物的每分钟速率：amount / 制造时长(秒) × 60 */
+function ratePerMinute(amount: number, duration: number): number {
+  if (duration <= 0 || amount <= 0) return 0
+  const rpm = (amount / duration) * 60
+  return Number.isFinite(rpm) ? Number(rpm.toFixed(4)) : 0
+}
+
+/** 产出物品 → 该物品全部可制造配方下拉选项（原生在前，替代在后，替代带「替代」前缀） */
+const recipeOptionsMap = computed(() => {
+  const map = new Map<string, RecipeOption[]>()
+  if (!dataStore.index) return map
+  for (const itemClass of outputItems.value) {
+    const recipeList = dataStore.index.recipes.get(itemClass)
+    if (!recipeList || recipeList.length === 0) continue
+    // 资源类产出（水/煤/原油等）引擎固定开采，不展示配方下拉，避免默认值误导
+    if (dataStore.index.items.get(itemClass)?.isResource) continue
+    const options = recipeList
+      .filter(r => !r.producedIn.some(p => p === 'Build_Converter'))
+      .sort((a, b) => Number(a.isAlternate) - Number(b.isAlternate))
+      .map(r => {
+        const displayName = r.className.startsWith('Recipe_Unpackage')
+          ? `解包:${r.displayName}`
+          : r.displayName
+        return {
+          value: r.className,
+          label: displayName,
+          displayName,
+          ingredients: r.ingredients.map(i => ({
+            name: itemDisplayName(i.itemClass),
+            icon: itemIcon(i.itemClass),
+            rate: ratePerMinute(i.amount, r.manufactoringDuration),
+          })),
+          products: r.products.map(p => ({
+            name: itemDisplayName(p.itemClass),
+            icon: itemIcon(p.itemClass),
+            rate: ratePerMinute(p.amount, r.manufactoringDuration),
+          })),
+        }
+      })
+    if (options.length > 0) map.set(itemClass, options)
+  }
+  return map
+})
+
+/** 产出物品 → 当前应显示在配方下拉中的配方（默认原生配方，排除解包配方的 className） */
+const outputRecipeDefaults = computed(() => {
+  const map = new Map<string, string>()
+  if (!dataStore.index) return map
+  for (const itemClass of outputItems.value) {
+    const recipeList = dataStore.index.recipes.get(itemClass)
+    if (!recipeList || recipeList.length === 0) continue
+    // 资源类产出引擎固定开采，无默认配方
+    if (dataStore.index.items.get(itemClass)?.isResource) continue
+    const factoryCandidates = recipeList.filter(r => !r.producedIn.some(p => p === 'Build_Converter'))
+    const nonUnpackage = factoryCandidates.filter(r => !r.className.startsWith('Recipe_Unpackage'))
+    const pool = nonUnpackage.length > 0 ? nonUnpackage : factoryCandidates
+    const standards = pool.filter(r => !r.isAlternate)
+    const candidates = standards.length > 0 ? standards : pool
+    const first = candidates.sort((a, b) => Number(a.isAlternate) - Number(b.isAlternate))[0]
+    if (first) map.set(itemClass, first.className)
+  }
+  return map
+})
 
 function getItemRate(itemClass: string): number {
   return outputRates.value.get(itemClass) ?? 1
@@ -75,6 +167,11 @@ function buildAlternativeMap(): Map<string, string> {
       }
     }
   }
+
+  // 产出下拉已选配方（含解包/其他非替代配方）强制并入，确保引擎按下拉指定生产
+  for (const [itemClass, recipeClass] of outputRecipes.value) {
+    map.set(itemClass, recipeClass)
+  }
   return map
 }
 
@@ -83,6 +180,9 @@ function removeOutputItem(value: string) {
   const next = new Map(outputRates.value)
   next.delete(value)
   outputRates.value = next
+  const nextRecipes = new Map(outputRecipes.value)
+  nextRecipes.delete(value)
+  outputRecipes.value = nextRecipes
   debounceRun()
 }
 function removeInputItem(value: string) {
@@ -97,6 +197,7 @@ function resetList() {
   inputItems.value = []
   outputRates.value = new Map()
   inputRates.value = new Map()
+  outputRecipes.value = new Map()
   emit('reset')
 }
 
@@ -168,6 +269,71 @@ const itemLabelMap = computed(() => {
   }
   return map
 })
+
+/** 按配方 className 查找配方（recipes Map 以产物 itemClass 为 key，需遍历） */
+function findRecipeByClass(recipeClass: string): GameRecipe | undefined {
+  if (!dataStore.index) return undefined
+  for (const recipeList of dataStore.index.recipes.values()) {
+    const found = recipeList.find(r => r.className === recipeClass)
+    if (found) return found
+  }
+  return undefined
+}
+
+/**
+ * 从配置页已选配方重建「产出物品 → 配方」映射。
+ * 仅匹配产自该配方（作为其任意产物）的产出物品；无匹配或未选任何配方时，
+ * 产出使用默认原生配方（dropdown 显示 defaults）。
+ */
+function rebuildOutputRecipes(): void {
+  const next = new Map<string, string>()
+  for (const recipeClass of paramsRef.value?.selectedRecipes ?? []) {
+    const recipe = findRecipeByClass(recipeClass)
+    if (!recipe) continue
+    for (const product of recipe.products) {
+      if (outputItems.value.includes(product.itemClass)) {
+        next.set(product.itemClass, recipeClass)
+      }
+    }
+  }
+  // 保留下拉中已选的非替代配方（如解包配方，不在配置页已选列表中）
+  for (const [itemClass, recipeClass] of outputRecipes.value) {
+    if (!next.has(itemClass)) {
+      const recipe = findRecipeByClass(recipeClass)
+      if (recipe && !recipe.isAlternate) next.set(itemClass, recipeClass)
+    }
+  }
+  outputRecipes.value = next
+}
+
+// 配置页已选配方（替代配方 + 转换器配方）变化 → 反向同步产出下拉
+watch(
+  () => [paramsRef.value?.selectedRecipes, paramsRef.value?.selectedConverter],
+  () => rebuildOutputRecipes(),
+)
+
+/** 产出物品当前应显示在配方下拉中的配方 */
+const recipeValueOf = (itemClass: string): string | undefined => {
+  return outputRecipes.value.get(itemClass) ?? outputRecipeDefaults.value.get(itemClass)
+}
+
+/** 下拉切换配方：写入产出级选择，并同步到配置页已选替代配方列表 */
+function changeOutputRecipe(itemClass: string, recipeClass: string): void {
+  outputRecipes.value = new Map(outputRecipes.value).set(itemClass, recipeClass)
+  const recipe = findRecipeByClass(recipeClass)
+
+  // 先移除配置页中所有产出该物品的已选配方（同一物品只用一种配方，
+  // 避免切换替代配方时旧配方残留），再按需加入当前选中项。
+  let next = (paramsRef.value?.selectedRecipes ?? []).filter((r) => {
+    const rec = findRecipeByClass(r)
+    return !(rec && rec.products.some((p) => p.itemClass === itemClass))
+  })
+  if (recipe?.isAlternate) {
+    next = [...new Set([...next, recipeClass])]
+  }
+  if (paramsRef.value) paramsRef.value.selectedRecipes = next
+  debounceRun()
+}
 
 const selectedItem = ref<string | undefined>(undefined)
 
@@ -243,8 +409,11 @@ const availableItems = computed(() =>
               :item-value="val"
               :item-name="itemLabelMap.get(val) ?? val"
               :rate="getItemRate(val)"
+              :recipe-options="recipeOptionsMap.get(val)"
+              :recipe-value="recipeValueOf(val)"
               @delete="removeOutputItem"
               @update:rate="updateItemRate"
+              @change-recipe="changeOutputRecipe"
             />
           </div>
         </div>

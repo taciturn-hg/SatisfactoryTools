@@ -1,21 +1,79 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useDataStore } from '@/stores/dataStore'
+import { getIconUrl } from '@/lib/iconRegistry'
 
 const emit = defineEmits<{ change: [] }>()
 
 const dataStore = useDataStore()
 
+/** 卡片中单个原料/产物条目 */
+interface RecipeIoItem {
+  name: string
+  icon?: string
+  rate: number
+}
+
+/** 替代配方下拉选项（含原料/产物详情，供 #option 插槽渲染） */
+interface RecipeOption {
+  value: string
+  label: string
+  displayName: string
+  ingredients: RecipeIoItem[]
+  products: RecipeIoItem[]
+}
+
+function itemDisplayName(itemClass: string): string {
+  return dataStore.index?.items.get(itemClass)?.displayName ?? itemClass
+}
+
+function itemIcon(itemClass: string): string | undefined {
+  const icon = dataStore.index?.items.get(itemClass)?.smallIcon
+  return icon ? getIconUrl(icon) : undefined
+}
+
+/** 配方原料/产物的每分钟速率：amount / 制造时长(秒) × 60 */
+function ratePerMinute(amount: number, duration: number): number {
+  if (duration <= 0 || amount <= 0) return 0
+  const rpm = (amount / duration) * 60
+  return Number.isFinite(rpm) ? Number(rpm.toFixed(4)) : 0
+}
+
+/** 格式化每分钟速率：整数省略小数，其余保留 1 位（与产线节点一致） */
+function formatRate(rate: number): string {
+  const rounded = Math.round(rate * 10) / 10
+  return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(1)
+}
+
+/** 下拉面板挂载到 body，脱离右侧面板的 overflow 容器，避免超宽面板触发横向滚动 */
+function dropdownContainer(): HTMLElement {
+  return document.body
+}
+
 /** 从 dataStore 获取所有替代配方（标准配方暂不列入） */
-const alternateRecipes = computed(() => {
+const alternateRecipes = computed<RecipeOption[]>(() => {
   if (!dataStore.index) return []
   const seen = new Set<string>()
-  const result: { value: string; label: string }[] = []
+  const result: RecipeOption[] = []
   for (const recipeList of dataStore.index.recipes.values()) {
     for (const r of recipeList) {
       if (!r.isAlternate || seen.has(r.className)) continue
       seen.add(r.className)
-      result.push({ value: r.className, label: r.displayName || r.className })
+      result.push({
+        value: r.className,
+        label: r.displayName || r.className,
+        displayName: r.displayName || r.className,
+        ingredients: r.ingredients.map(i => ({
+          name: itemDisplayName(i.itemClass),
+          icon: itemIcon(i.itemClass),
+          rate: ratePerMinute(i.amount, r.manufactoringDuration),
+        })),
+        products: r.products.map(p => ({
+          name: itemDisplayName(p.itemClass),
+          icon: itemIcon(p.itemClass),
+          rate: ratePerMinute(p.amount, r.manufactoringDuration),
+        })),
+      })
     }
   }
   return result.sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'))
@@ -111,16 +169,43 @@ defineExpose({
           (omitted: { label: string }[]) => `已选 ${omitted.length + 1} 个替代配方`
         "
         show-search
-        :getPopupContainer="(trigger: HTMLElement) => trigger.parentElement"
+        :getPopupContainer="dropdownContainer"
+        :dropdown-match-select-width="480"
+        :dropdown-style="{ minWidth: '480px' }"
+        placement="bottomRight"
         :filter-option="
           (input: string, option: { label: string }) =>
             option.label.toLowerCase().includes(input.toLowerCase())
         "
         :options="alternateRecipes"
         style="width: 100%"
-        :listHeight="128"
+        :listHeight="256"
         :virtual="false"
       >
+        <template #option="{ displayName, ingredients, products }">
+          <div class="recipe-card">
+            <div class="recipe-card-name">{{ displayName }}</div>
+            <div class="recipe-card-body">
+              <div class="recipe-io-list">
+                <div v-for="(io, i) in ingredients" :key="i" class="recipe-io-item">
+                  <img v-if="io.icon" :src="io.icon" alt="" class="recipe-io-icon" />
+                  <span v-else class="recipe-io-icon recipe-io-icon-placeholder">■</span>
+                  <span class="recipe-io-name">{{ io.name }}</span>
+                  <span class="recipe-io-amount">{{ formatRate(io.rate) }}/min</span>
+                </div>
+              </div>
+              <div class="recipe-arrow">→</div>
+              <div class="recipe-io-list">
+                <div v-for="(io, i) in products" :key="i" class="recipe-io-item">
+                  <img v-if="io.icon" :src="io.icon" alt="" class="recipe-io-icon" />
+                  <span v-else class="recipe-io-icon recipe-io-icon-placeholder">■</span>
+                  <span class="recipe-io-name">{{ io.name }}</span>
+                  <span class="recipe-io-amount">{{ formatRate(io.rate) }}/min</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
         <template #dropdownRender="{ menuNode: menu }">
           <div>
             <component :is="menu" />
@@ -446,5 +531,64 @@ defineExpose({
 .dropdown-btn:hover {
   border-color: var(--color-primary);
   color: var(--color-primary);
+}
+.recipe-card {
+  padding: 8px 12px;
+}
+.recipe-card-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+.recipe-card-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.recipe-io-list {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.recipe-io-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.recipe-io-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.recipe-io-icon-placeholder {
+  color: var(--text-muted);
+}
+.recipe-io-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recipe-io-amount {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.recipe-arrow {
+  font-size: 16px;
+  color: var(--text-muted);
+  flex-shrink: 0;
 }
 </style>
