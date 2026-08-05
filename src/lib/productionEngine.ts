@@ -69,6 +69,10 @@ function resolveResourceExtractor(
   const item = index.items.get(itemClass)
   if (!item) return undefined
 
+  // 非自然资源（无配方但被引用为原料，如木材/树叶/能量蛞蝓/尸体等手动采集物）
+  // 没有采集器，不作为机器节点展示，图标显示物品本身。
+  if (!item.isResource) return undefined
+
   // 水 → 抽水站（120/min 固定）或资源提取器（按纯度）
   if (itemClass === 'Desc_Water_C') {
     if (config?.waterExtractor === 'resource_well') {
@@ -320,9 +324,10 @@ export function planProduction(index: DataIndex, options: PlanOptions): Producti
         node.machineClocks = group.clocks
         node.machineType = extractor.machineType
       } else {
+        // 手动采集原料（如木材/树叶/能量蛞蝓）：无采集器机器，仅展示物品节点
         node.recipeUsed = null
-        node.machineCount = 1
-        node.machineClocks = [1]
+        node.machineCount = 0
+        node.machineClocks = []
         node.machineType = null
       }
       ancestors.delete(node.itemClass)
