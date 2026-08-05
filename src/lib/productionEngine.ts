@@ -288,7 +288,28 @@ function selectRecipe(
     return best
   }
 
-  // 全是替代配方（如煤的木炭、生物煤）→ 不展开，视为资源
+  // 无标准配方：若存在替代配方则自动选一个展开，
+  // 使「只有替代配方可制造」的物品（如涡轮燃油）不作为叶子节点。
+  // 优先选「目标物品是主产物」的替代配方，避免把目标当副产物来生产；
+  // 无主产物替代配方时回退到原候选集。
+  const alternatePool = mainProductCandidates.length > 0
+    ? mainProductCandidates
+    : factoryCandidates
+  const alternates = alternatePool.filter(r => r.isAlternate)
+  if (alternates.length > 0) {
+    let best = alternates[0]!
+    let bestScore = recipeResourceScore(best, index)
+    for (let i = 1; i < alternates.length; i++) {
+      const score = recipeResourceScore(alternates[i]!, index)
+      if (score > bestScore) {
+        best = alternates[i]!
+        bestScore = score
+      }
+    }
+    return best
+  }
+
+  // 无任何可用配方 → 视为资源（叶子节点）
   return null
 }
 
