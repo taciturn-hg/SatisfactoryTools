@@ -735,35 +735,54 @@ function reduceNodeRateInner(
 }
 
 /**
- * 删除节点及其所有独占上游节点（递归清理叶子方向）。
+ * 删除节点及其所有不再有需求的节点（递归清理叶子方向）。
  *
- * 只有当一个上游节点的所有出边都指向即将被删除的节点时，它才会被删除。
- * 这确保共享的上游节点（如同时供应铁板和铁棒的铁锭）不会被错误地删除。
+ * 采用「存活传播」算法：从保留锚点（目标产出 OUT、用户输入 INP）反向传播存活，
+ * 一个普通节点存活当且仅当它有一条出边指向存活节点（即下游仍有真实需求）；
+ * 副产物节点存活取决于其生产者存活。传播到收敛后，删除 startNode 及
+ * 所有不存活的节点。
+ *
+ * 相比逐点 BFS 的优势：能正确处理副产物回灌形成的双向依赖环
+ * （如 氧化铝溶液 ⇄ 碎铝渣），环内节点没有通向存活锚点的出边，会整体被清除。
+ * 共享上游（如同时供应铁板和铁棒的铁锭）因有出边指向存活节点而自然保留。
  */
 function removeNodeAndUpstream(node: ProductionNode, graph: ProductionGraph): void {
-  const toRemove = new Set<string>()
-  const queue = [node.id]
+  const toRemove = new Set([node.id])
 
-  toRemove.add(node.id)
+  // 存活锚点：目标产出（depth 0 根节点或 OUT 展示节点）与用户输入节点永不删除。
+  // 注意：本函数在 applyInputItems 阶段调用，此时 OUT 展示节点尚未创建，
+  // 因此用 depth === 0 的目标根节点作为锚点。排除 depth 0 的副产物节点
+  // （如橡胶产线的重油残渣），它们由生产者决定存活，不构成独立锚点。
+  const alive = new Set<string>()
+  for (const n of graph.nodes) {
+    if (n.isOutputTarget || n.isUnused || (n.depth === 0 && !n.isByproduct)) alive.add(n.id)
+  }
+  alive.delete(node.id) // startNode 强制删除，即使其 depth 为 0
 
-  // BFS 收集：仅当上游节点的所有出边目的地都在 toRemove 中时才加入
-  let head = 0
-  while (head < queue.length) {
-    const id = queue[head]!
-    head++
-    for (const edge of graph.edges) {
-      if (edge.targetNodeId !== id) continue
-      const src = edge.sourceNodeId
-      if (toRemove.has(src)) continue
-      // 检查该上游节点的所有出边是否都指向待删除节点
-      const allOutToRemove = graph.edges
-        .filter(e => e.sourceNodeId === src)
-        .every(e => toRemove.has(e.targetNodeId))
-      if (allOutToRemove) {
-        toRemove.add(src)
-        queue.push(src)
+  // 传播到收敛
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const n of graph.nodes) {
+      if (n.id === node.id || alive.has(n.id)) continue
+      let survives: boolean
+      if (n.isByproduct) {
+        // 副产物节点无出边，存活取决于生产者（任一入边来源存活）
+        survives = graph.edges.some(e => e.targetNodeId === n.id && alive.has(e.sourceNodeId))
+      } else {
+        // 普通节点存活 ⟺ 存在一条出边指向存活节点
+        survives = graph.edges.some(e => e.sourceNodeId === n.id && alive.has(e.targetNodeId))
+      }
+      if (survives) {
+        alive.add(n.id)
+        changed = true
       }
     }
+  }
+
+  // startNode 及所有不存活的节点一并删除
+  for (const n of graph.nodes) {
+    if (!alive.has(n.id)) toRemove.add(n.id)
   }
 
   graph.edges = graph.edges.filter(
