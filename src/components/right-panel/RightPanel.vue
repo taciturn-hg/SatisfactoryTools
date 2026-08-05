@@ -7,6 +7,8 @@ import ItemDetail from '@/components/right-panel/ItemDetail.vue'
 import PlanParams from '@/components/right-panel/PlanParams.vue'
 import PlanActions from '@/components/right-panel/PlanActions.vue'
 import { getIconUrl } from '@/lib/iconRegistry'
+import { itemDisplayName, itemIcon, ratePerMinute } from '@/lib/recipeOptions'
+import type { RecipeOption } from '@/lib/recipeOptions'
 import type { ProductionGraph, ExtractorConfig, GameRecipe } from '@/types'
 
 const emit = defineEmits<{
@@ -25,38 +27,6 @@ const inputRates = ref(new Map<string, number>())
 
 /** 按产出物品选定的配方（未含项 = 该产出用默认原生配方） */
 const outputRecipes = ref(new Map<string, string>())
-
-/** 配方下拉中单个原料/产物条目 */
-interface RecipeIoItem {
-  name: string
-  icon?: string
-  rate: number
-}
-
-/** 配方下拉选项（含原料/产物详情，供 #option 插槽渲染） */
-interface RecipeOption {
-  value: string
-  label: string
-  displayName: string
-  ingredients: RecipeIoItem[]
-  products: RecipeIoItem[]
-}
-
-function itemDisplayName(itemClass: string): string {
-  return dataStore.index?.items.get(itemClass)?.displayName ?? itemClass
-}
-
-function itemIcon(itemClass: string): string | undefined {
-  const icon = dataStore.index?.items.get(itemClass)?.smallIcon
-  return icon ? getIconUrl(icon) : undefined
-}
-
-/** 配方原料/产物的每分钟速率：amount / 制造时长(秒) × 60 */
-function ratePerMinute(amount: number, duration: number): number {
-  if (duration <= 0 || amount <= 0) return 0
-  const rpm = (amount / duration) * 60
-  return Number.isFinite(rpm) ? Number(rpm.toFixed(4)) : 0
-}
 
 /** 产出物品 → 该物品全部可制造配方下拉选项（原生在前，替代在后，替代带「替代」前缀） */
 const recipeOptionsMap = computed(() => {
@@ -79,13 +49,13 @@ const recipeOptionsMap = computed(() => {
           label: displayName,
           displayName,
           ingredients: r.ingredients.map(i => ({
-            name: itemDisplayName(i.itemClass),
-            icon: itemIcon(i.itemClass),
+            name: itemDisplayName(dataStore.index, i.itemClass),
+            icon: itemIcon(dataStore.index, i.itemClass),
             rate: ratePerMinute(i.amount, r.manufactoringDuration),
           })),
           products: r.products.map(p => ({
-            name: itemDisplayName(p.itemClass),
-            icon: itemIcon(p.itemClass),
+            name: itemDisplayName(dataStore.index, p.itemClass),
+            icon: itemIcon(dataStore.index, p.itemClass),
             rate: ratePerMinute(p.amount, r.manufactoringDuration),
           })),
         }

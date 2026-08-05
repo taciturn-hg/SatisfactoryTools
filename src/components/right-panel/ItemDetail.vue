@@ -2,6 +2,8 @@
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { useDataStore } from '@/stores/dataStore'
 import { getIconUrl } from '@/lib/iconRegistry'
+import type { RecipeOption } from '@/lib/recipeOptions'
+import RecipeOptionCard from '@/components/right-panel/RecipeOptionCard.vue'
 
 /** 滚动容器（产出/原料列表所在 .panel-content），滚动时收起下拉 */
 let scrollContainer: HTMLElement | null = null
@@ -34,20 +36,6 @@ const props = defineProps<{
   /** 当前选中的配方（未指定替代配方时为默认原生配方） */
   recipeValue?: string
 }>()
-
-interface RecipeIoItem {
-  name: string
-  icon?: string
-  rate: number
-}
-
-interface RecipeOption {
-  value: string
-  label: string
-  displayName: string
-  ingredients: RecipeIoItem[]
-  products: RecipeIoItem[]
-}
 
 const emit = defineEmits<{
   delete: [itemValue: string]
@@ -86,12 +74,6 @@ function dropdownContainer(): HTMLElement {
   return document.body
 }
 
-/** 格式化每分钟速率：整数省略小数，其余保留 1 位（与产线节点一致） */
-function formatRate(rate: number): string {
-  const rounded = Math.round(rate * 10) / 10
-  return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(1)
-}
-
 function onDelete() {
   emit('delete', props.itemValue)
 }
@@ -126,28 +108,7 @@ function onDelete() {
             @change="onRecipeChange"
           >
             <template #option="{ displayName, ingredients, products }">
-              <div class="recipe-card">
-                <div class="recipe-card-name">{{ displayName }}</div>
-                <div class="recipe-card-body">
-                  <div class="recipe-io-list">
-                    <div v-for="(io, i) in ingredients" :key="i" class="recipe-io-item">
-                      <img v-if="io.icon" :src="io.icon" alt="" class="recipe-io-icon" />
-                      <span v-else class="recipe-io-icon recipe-io-icon-placeholder">■</span>
-                      <span class="recipe-io-name">{{ io.name }}</span>
-                      <span class="recipe-io-amount">{{ formatRate(io.rate) }}/min</span>
-                    </div>
-                  </div>
-                  <div class="recipe-arrow">→</div>
-                  <div class="recipe-io-list">
-                    <div v-for="(io, i) in products" :key="i" class="recipe-io-item">
-                      <img v-if="io.icon" :src="io.icon" alt="" class="recipe-io-icon" />
-                      <span v-else class="recipe-io-icon recipe-io-icon-placeholder">■</span>
-                      <span class="recipe-io-name">{{ io.name }}</span>
-                      <span class="recipe-io-amount">{{ formatRate(io.rate) }}/min</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <RecipeOptionCard :option="{ displayName, ingredients, products }" />
             </template>
           </a-select>
         </div>
@@ -220,65 +181,6 @@ function onDelete() {
 }
 .recipe-select {
   width: 100%;
-}
-.recipe-card {
-  padding: 8px 12px;
-}
-.recipe-card-name {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-primary);
-  margin-bottom: 6px;
-}
-.recipe-card-body {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.recipe-io-list {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.recipe-io-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-.recipe-io-icon {
-  width: 24px;
-  height: 24px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-tertiary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  flex-shrink: 0;
-  overflow: hidden;
-}
-.recipe-io-icon-placeholder {
-  color: var(--text-muted);
-}
-.recipe-io-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.recipe-io-amount {
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-.recipe-arrow {
-  font-size: 16px;
-  color: var(--text-muted);
-  flex-shrink: 0;
 }
 :deep(.ant-tooltip-inner) {
   background: var(--bg-tertiary);

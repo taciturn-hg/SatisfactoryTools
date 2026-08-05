@@ -154,6 +154,11 @@
 - [x] 替代配方识别改为启发式：`Alternate_` 前缀但唯一产物且显示名与产物名一致者视为原生配方（涡轮燃油/压缩煤）
 - [x] `CACHE_VERSION` 提升至 9，使 isAlternate 语义变更对已缓存用户生效
 
+#### 3.3.2 配方下拉共享模块（2026-08-06 重构）
+
+- [x] 抽取 `src/lib/recipeOptions.ts`：`RecipeIoItem`/`RecipeOption` 类型 + `itemDisplayName`/`itemIcon`/`ratePerMinute`/`formatRate` 纯函数
+- [x] 抽取 `src/components/right-panel/RecipeOptionCard.vue`：配方卡片渲染（配方名 + 原料→产物）及样式，供 RightPanel/ItemDetail/PlanParams 共用，消除三处重复代码
+
 #### 3.4 图转换与布局
 
 - [x] `graphTransformer.ts` — `ProductionGraph` → Vue Flow 格式
