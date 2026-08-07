@@ -124,21 +124,23 @@ function buildAlternativeMap(): Map<string, string> {
   const p = paramsRef.value
   if (!p) return map
 
+  // 配置页已选配方（替代配方 + 转换器配方）→ 按产物物品映射到对应配方
   const allRecipes = p.selectedRecipes.concat(p.selectedConverter)
-  if (!allRecipes.length) return map
-
-  const recipeSet = new Set(allRecipes)
-  for (const recipeList of dataStore.index!.recipes.values()) {
-    for (const r of recipeList) {
-      if (recipeSet.has(r.className)) {
-        for (const product of r.products) {
-          map.set(product.itemClass, r.className)
+  if (allRecipes.length) {
+    const recipeSet = new Set(allRecipes)
+    for (const recipeList of dataStore.index!.recipes.values()) {
+      for (const r of recipeList) {
+        if (recipeSet.has(r.className)) {
+          for (const product of r.products) {
+            map.set(product.itemClass, r.className)
+          }
         }
       }
     }
   }
 
-  // 产出下拉已选配方（含解包/其他非替代配方）强制并入，确保引擎按下拉指定生产
+  // 产出下拉已选配方（含原生/解包等非替代配方）无条件并入，确保引擎按下拉指定生产。
+  // 配置页未选任何配方时也必须并入，否则原生配方/解包配方的下拉选择会被忽略。
   for (const [itemClass, recipeClass] of outputRecipes.value) {
     map.set(itemClass, recipeClass)
   }
