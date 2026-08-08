@@ -696,6 +696,16 @@ function reduceNodeRateInner(
   // 速率降至 FUZZ 以下视为归零：去掉 toFixed(4) 后浮点残差（~1e-15）不再被截断成 0，
   // 需用容差判断，否则完全被替代的生产节点会残留一个 ~0 速率的幽灵节点
   if (newRate <= FUZZ) {
+    // 先沿入边递归缩减上游：被完全替代的节点归零后若直接 removeNodeAndUpstream，
+    // 共享上游（还有其他消费者，如原油同时供涡轮燃油与聚合树脂制造）会保留但 rate 不扣减，
+    // 造成 rate 虚高。先缩减入边源头，再删除本节点。
+    for (const edge of graph.edges) {
+      if (edge.targetNodeId !== node.id) continue
+      const sourceNode = graph.nodes.find(n => n.id === edge.sourceNodeId)
+      if (sourceNode && !sourceNode.isByproduct) {
+        reduceNodeRateInner(sourceNode, graph, index, options, edge.flowRate, visited)
+      }
+    }
     removeNodeAndUpstream(node, graph)
     return
   }
