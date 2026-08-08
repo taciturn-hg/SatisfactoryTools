@@ -1,11 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
-
-function formatRate(rate: number): string {
-  const rounded = Math.round(rate * 10) / 10
-  return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(1)
-}
+import { formatRate } from '@/lib/recipeOptions'
 
 const props = defineProps<{
   id: string

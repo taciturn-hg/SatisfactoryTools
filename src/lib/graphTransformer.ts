@@ -8,6 +8,7 @@
 import type { Node, Edge } from '@vue-flow/core'
 import type { ProductionGraph, ProductionNode, DataIndex } from '@/types'
 import { getIconUrl } from '@/lib/iconRegistry'
+import { formatRate } from '@/lib/recipeOptions'
 
 /**
  * 根据节点类型确定颜色代码
@@ -53,14 +54,6 @@ export function formatClocks(clocks: number[]): string {
 function lookupBuildingName(machineType: string, index?: DataIndex): string {
   if (!index) return machineType
   return index.buildings.get(machineType)?.displayName || machineType
-}
-
-/**
- * 格式化每分钟速率标签，整数省略小数
- */
-function formatRate(rate: number): string {
-  const rounded = Math.round(rate * 10) / 10
-  return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(1)
 }
 
 /** 将 Build_ClassName 转为图标文件路径，仅当 buildings 中有 iconPath 时返回 */

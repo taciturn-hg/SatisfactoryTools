@@ -4,6 +4,7 @@ import { useDataStore } from '@/stores/dataStore'
 import { usePowerStore } from '@/stores/powerStore'
 import { listAvailableFuels } from '@/lib/powerEngine'
 import { formatClocks } from '@/lib/graphTransformer'
+import { formatRate } from '@/lib/recipeOptions'
 import { getIconUrl } from '@/lib/iconRegistry'
 
 const dataStore = useDataStore()
@@ -219,25 +220,25 @@ const clockSummary = computed(() => {
         <div class="result-info">
           <div class="info-upper">
             <div class="clock-line">{{ clockSummary }}</div>
-            <div class="actual-power">实际发电 <span class="power-red">{{ powerStore.currentResult.totalPower }}</span> MW</div>
+            <div class="actual-power">实际发电 <span class="power-red">{{ formatRate(powerStore.currentResult.totalPower) }}</span> MW</div>
           </div>
           <div class="info-lower">
             <div v-if="fuelResult" class="io-row">
               <span class="io-icon">⛽</span>
               <span class="io-label">燃料输入</span>
-              <span class="io-value">{{ fuelResult.rate.toFixed(1) }} / 分钟</span>
+              <span class="io-value">{{ formatRate(fuelResult.rate) }} / 分钟</span>
               <span class="io-sub">{{ fuelResult.name }}</span>
             </div>
             <div v-if="supplementResult" class="io-row supplement">
               <span class="io-icon">💧</span>
               <span class="io-label">补充输入</span>
-              <span class="io-value">{{ supplementResult.toFixed(1) }} m³ / 分钟</span>
+              <span class="io-value">{{ formatRate(supplementResult) }} m³ / 分钟</span>
               <span class="io-sub">水</span>
             </div>
             <div v-if="byproductResult" class="io-row byproduct">
               <span class="io-icon">☢️</span>
               <span class="io-label">副产物</span>
-              <span class="io-value">{{ byproductResult.rate.toFixed(2) }} / 分钟</span>
+              <span class="io-value">{{ formatRate(byproductResult.rate) }} / 分钟</span>
               <span class="io-sub">{{ byproductResult.name }}</span>
             </div>
             <div v-if="!fuelResult && !supplementResult && !byproductResult" class="io-empty">

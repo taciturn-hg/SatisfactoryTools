@@ -43,8 +43,8 @@ export function ratePerMinute(amount: number, duration: number): number {
   return Number.isFinite(rpm) ? Number(rpm.toFixed(4)) : 0
 }
 
-/** 格式化每分钟速率：整数省略小数，其余保留 1 位（与产线节点一致） */
+/** 格式化每分钟速率，保留小数点后 3 位（整数省略小数，其余保留 3 位） */
 export function formatRate(rate: number): string {
-  const rounded = Math.round(rate * 10) / 10
-  return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(1)
+  const rounded = Math.round(rate * 1000) / 1000
+  return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(3)
 }

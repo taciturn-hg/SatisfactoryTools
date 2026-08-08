@@ -38,8 +38,8 @@ export function useProductionPlan() {
         power += p * Math.pow(c, exponent)
       }
     }
-    const rounded = Math.round(power * 10) / 10
-    return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(1)
+    const rounded = Math.round(power * 1000) / 1000
+    return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(3)
   })
 
   function onGraphReady(graph: ProductionGraph) {
