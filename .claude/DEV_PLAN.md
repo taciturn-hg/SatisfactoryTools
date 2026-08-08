@@ -249,6 +249,7 @@
 #### 6.1 UI 细节
 
 - [x] 产线/发电数值显示统一为小数点后 3 位（2026-08-08）：公共 `formatRate` 从 1 位改为 3 位，消除 graphTransformer/FlowNode/useProductionPlan 三处重复定义，统一导入 `src/lib/recipeOptions.ts`；发电页模板内联 `toFixed` 全部改用 `formatRate`，解决总功率尾随零丢失
+- [x] `formatRate` 尾随零裁剪（2026-08-08）：去掉 `toFixed(3)` 补零，改为四舍五入到 3 位后取浮点最短表示（3.5 → "3.5"、3.75 → "3.75"、仅 3.755 这类显示三位）
 - [x] 引擎精度重构（2026-08-08）：productionEngine/powerEngine 全部内部 `toFixed(4)` 主动截断改为浮点原生精度，定义 `FUZZ=0.005`（可忽略阈值）与 `CLOCK_OVERSHOOT_FUZZ=0.001`（时钟超产阈值）常量，替换 13 处硬编码比较。`ratePerMinute` 去截断。格式化全部交由视图层 `formatRate`（3 位）。回归验证：铝/钢/铁产线、发电引擎核心输出与重构前一致
 - [ ] 深色主题完善
 - [ ] 节点颜色编码（基础资源/中间产物/最终产品/副产物）
