@@ -40,6 +40,9 @@ function normalizedEnergy(energyValue: number, form: string): number {
   return form === 'liquid' || form === 'gas' ? energyValue * 1000 : energyValue
 }
 
+/** 速率/频率可忽略阈值：小于此值的余数视为零，避免浮点噪音产生多余发电机 */
+const FUZZ = 0.005
+
 /**
  * 根据碎片数量计算最高可用频率倍率。
  * 每碎片 +50%，上限 250%。
@@ -85,7 +88,7 @@ export function calculatePowerPlan(
       machineClocks = [Math.max(0.01, remainder)]
     } else {
       machineClocks = Array.from({ length: fullCount }, () => maxClock)
-      if (remainder > 0.005) {
+      if (remainder > FUZZ) {
         machineClocks.push(Math.max(0.01, remainder))
       }
       generatorCount = machineClocks.length
@@ -126,7 +129,7 @@ export function calculatePowerPlan(
     const ev = normalizedEnergy(fuelItem.energyValue, fuelItem.form)
     // 燃料消耗 = 60 × 实际总功率 / 能量值
     const rawFuel = (60 * totalPower) / ev
-    fuelConsumptionPerMinute = Number(rawFuel.toFixed(4))
+    fuelConsumptionPerMinute = rawFuel
 
     // cycles/min = 燃料消耗速率 / 单周期燃料装载量
     // fuelLoadAmount 对液态/气态燃料以 mL 为单位，需 ÷1000 以匹配 m³/min 的消耗单位
@@ -137,9 +140,7 @@ export function calculatePowerPlan(
     // 辅助资源（水）
     if (generator.requiresSupplementalResource && generator.supplementalLoadAmount) {
       const loadML = generator.supplementalLoadAmount
-      supplementalConsumptionPerMinute = Number(
-        ((loadML / 1000) * cyclesPerMinTotal).toFixed(4),
-      )
+      supplementalConsumptionPerMinute = (loadML / 1000) * cyclesPerMinTotal
     }
 
     // 副产物
@@ -151,19 +152,19 @@ export function calculatePowerPlan(
       const byproductPerCycle = byproductItem && (byproductItem.form === 'liquid' || byproductItem.form === 'gas')
         ? rawAmount / 1000
         : rawAmount
-      byproductPerMinute = Number((byproductPerCycle * cyclesPerMinTotal).toFixed(4))
+      byproductPerMinute = byproductPerCycle * cyclesPerMinTotal
     }
   }
 
   return {
     generatorCount,
-    actualPowerPerGenerator: Number(actualPowerPerGen.toFixed(2)),
-    totalPower: Number(totalPower.toFixed(2)),
+    actualPowerPerGenerator: actualPowerPerGen,
+    totalPower,
     fuelConsumptionPerMinute,
     supplementalConsumptionPerMinute,
     byproductPerMinute,
     byproductClass,
-    overclockRatio: Number(machineClocks[0]!.toFixed(4)),
+    overclockRatio: machineClocks[0]!,
     machineClocks,
   }
 }
@@ -191,8 +192,8 @@ function calcGeothermal(
 
   return {
     generatorCount: count,
-    actualPowerPerGenerator: Number(actualPowerPerGen.toFixed(2)),
-    totalPower: Number((count * actualPowerPerGen).toFixed(2)),
+    actualPowerPerGenerator: actualPowerPerGen,
+    totalPower: count * actualPowerPerGen,
     fuelConsumptionPerMinute: 0,
     supplementalConsumptionPerMinute: 0,
     byproductPerMinute: 0,

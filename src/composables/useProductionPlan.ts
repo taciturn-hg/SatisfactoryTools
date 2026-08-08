@@ -10,6 +10,7 @@
 import { ref, computed } from 'vue'
 import { useDataStore } from '@/stores/dataStore'
 import { toVueFlowGraph } from '@/lib/graphTransformer'
+import { formatRate } from '@/lib/recipeOptions'
 import type { ProductionGraph } from '@/types'
 import type { Node as VFNode, Edge as VFEdge } from '@vue-flow/core'
 
@@ -38,8 +39,7 @@ export function useProductionPlan() {
         power += p * Math.pow(c, exponent)
       }
     }
-    const rounded = Math.round(power * 1000) / 1000
-    return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(3)
+    return formatRate(power)
   })
 
   function onGraphReady(graph: ProductionGraph) {

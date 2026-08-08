@@ -39,13 +39,20 @@ const MINER_MULTIPLIER: Record<string, number> = {
   mk3: 4,
 }
 
+/** 速率/频率可忽略阈值：小于此值的余数视为零，避免浮点噪音产生多余机器 */
+const FUZZ = 0.005
+
+/** 时钟分配容许超产阈值（比 FUZZ 更严格，因时钟值是精确的 1.0/1.5/2.0/2.5 组合） */
+const CLOCK_OVERSHOOT_FUZZ = 0.001
+
 /**
  * 将单次制造中，原料/产物的 Amount 换算为每分钟速率。
+ * 不主动截断，保持浮点原生精度，判断交给 FUZZ 容差。
  */
 function ratePerMinute(amount: number, duration: number): number {
   if (duration <= 0 || amount <= 0) return 0
   const rpm = (amount / duration) * 60
-  return Number.isFinite(rpm) ? Number(rpm.toFixed(4)) : 0
+  return Number.isFinite(rpm) ? rpm : 0
 }
 
 /**
@@ -150,14 +157,13 @@ function calcMachineGroup(
     clocks.push(...Array<number>(fullMachines).fill(maxClock))
     // remainderFraction: 剩余所需相当于多少台机器的产量（无量纲）
     const remainderFraction = remainder / perMachineRate
-    if (remainderFraction > 0.005) {
-      const lastClock = Number(remainderFraction.toFixed(4))
-      clocks.push(Math.min(lastClock, maxClock))
+    if (remainderFraction > FUZZ) {
+      clocks.push(Math.min(remainderFraction, maxClock))
     } else if (remainderFraction > 0) {
-      clocks[clocks.length - 1] = Number((maxClock + remainderFraction).toFixed(4))
+      clocks[clocks.length - 1] = maxClock + remainderFraction
     }
   } else {
-    clocks.push(Number((rate / perMachineRate).toFixed(4)))
+    clocks.push(rate / perMachineRate)
   }
 
   return { machineCount: rawCount, clocks }
@@ -473,7 +479,7 @@ export function planProduction(index: DataIndex, options: PlanOptions): Producti
   // 为每个深度 0 的生产节点添加目标产出展示节点
   // 合并后同物品多目标已自动归并为一个节点
   const outputTargets = graph.nodes.filter(
-    n => n.depth === 0 && !n.isUnused && !n.isByproduct && n.rate > 0.005,
+    n => n.depth === 0 && !n.isUnused && !n.isByproduct && n.rate > FUZZ,
   )
   for (const planRoot of outputTargets) {
     if (!planRoot.recipeUsed && !planRoot.machineType) continue
@@ -685,9 +691,11 @@ function reduceNodeRateInner(
   if (visited.has(node.id)) return
   visited.add(node.id)
 
-  const newRate = Number(Math.max(0, node.rate - reduceBy).toFixed(4))
+  const newRate = Math.max(0, node.rate - reduceBy)
 
-  if (newRate <= 0) {
+  // 速率降至 FUZZ 以下视为归零：去掉 toFixed(4) 后浮点残差（~1e-15）不再被截断成 0，
+  // 需用容差判断，否则完全被替代的生产节点会残留一个 ~0 速率的幽灵节点
+  if (newRate <= FUZZ) {
     removeNodeAndUpstream(node, graph)
     return
   }
@@ -724,11 +732,9 @@ function reduceNodeRateInner(
     }
 
     // 原料需求用量比推算：ingredientAmount / mainProductAmount * node.rate
-    // 避免 totalClock × perMachineRate 因 toFixed(4) 截断导致的精度误差
+    // 用原生浮点，避免 toFixed 截断导致的精度误差
     for (const ingredient of node.recipeUsed.ingredients) {
-      const newIngredientRate = Number(
-        (node.rate * (ingredient.amount / mainProduct.amount)).toFixed(4),
-      )
+      const newIngredientRate = node.rate * (ingredient.amount / mainProduct.amount)
 
       const edge = graph.edges.find(
         e => e.targetNodeId === node.id && e.itemClass === ingredient.itemClass
@@ -837,7 +843,7 @@ function applyByproductRecycling(
   index: DataIndex,
   options: PlanOptions,
 ): void {
-  const byproducts = graph.nodes.filter(n => n.isByproduct && n.rate > 0.005)
+  const byproducts = graph.nodes.filter(n => n.isByproduct && n.rate > FUZZ)
   if (!byproducts.length) return
 
   for (const bp of byproducts) {
@@ -868,13 +874,13 @@ function applyByproductRecycling(
     // 按比例分配
     for (const [consumerId, consumerDemand] of consumerMap) {
       const portion = allocRate * (consumerDemand / totalDemand)
-      const trimmed = Number(portion.toFixed(4))
-      if (trimmed <= 0.005) continue
+      const trimmed = portion
+      if (trimmed <= FUZZ) continue
 
       // 回灌边从产生方直接连到消费者，多个产生方按产生流量占比分配
       for (const pe of producerEdges) {
-        const pePortion = Number((trimmed * (pe.flowRate / totalProduced)).toFixed(4))
-        if (pePortion > 0.005) {
+        const pePortion = trimmed * (pe.flowRate / totalProduced)
+        if (pePortion > FUZZ) {
           addEdge(graph, pe.sourceNodeId, consumerId, pePortion, bp.itemClass)
         }
       }
@@ -888,7 +894,7 @@ function applyByproductRecycling(
       )
       for (const extEdge of externalEdges) {
         const reduceBy = Math.min(trimmed, extEdge.flowRate)
-        extEdge.flowRate = Number((extEdge.flowRate - reduceBy).toFixed(4))
+        extEdge.flowRate = extEdge.flowRate - reduceBy
 
         // 递归缩减上游
         const upstreamNode = graph.nodes.find(n => n.id === extEdge.sourceNodeId)
@@ -899,7 +905,7 @@ function applyByproductRecycling(
     }
 
     // 结算：副产物被全部利用 → 删除副产物节点与产生边，不留中转
-    if (allocRate >= totalProduced - 0.005) {
+    if (allocRate >= totalProduced - FUZZ) {
       graph.nodes = graph.nodes.filter(n => n.id !== bp.id)
       graph.edges = graph.edges.filter(
         e => e.targetNodeId !== bp.id && e.sourceNodeId !== bp.id,
@@ -908,9 +914,9 @@ function applyByproductRecycling(
       // 有多余副产物（产生 > 需求）：按产生方比例缩减各产生边，保留节点展示剩余量
       const leftoverRatio = (totalProduced - allocRate) / totalProduced
       for (const pe of producerEdges) {
-        pe.flowRate = Number((pe.flowRate * leftoverRatio).toFixed(4))
+        pe.flowRate = pe.flowRate * leftoverRatio
       }
-      bp.rate = Number((totalProduced - allocRate).toFixed(4))
+      bp.rate = totalProduced - allocRate
     }
   }
 }
@@ -960,7 +966,7 @@ function applyOverclock(
   for (const node of prodNodes) {
     const baseRate = getNodePerMachineRate(node, index, options)
     if (!baseRate || baseRate <= 0) continue
-    const rawCount = Number((node.rate / baseRate).toFixed(4))
+    const rawCount = node.rate / baseRate
     if (rawCount > 1) {
       demands.push({ node, rawCount, baseRate, isLeaf: !node.recipeUsed })
     }
@@ -976,7 +982,9 @@ function applyOverclock(
   for (const d of demands) {
     if (d.isLeaf) {
       leaf.push(d)
-    } else if (d.rawCount % 1 > 0.005) {
+    } else if (Math.abs(d.rawCount - Math.round(d.rawCount)) > FUZZ) {
+      // 含显著小数部分 → 需要消除降频；%1 单侧比较会漏掉下偏整数噪声
+      // （如 rawCount = n − 1e-15 时 %1 ≈ 1），需按到最近整数的距离双向判整
       nonLeafWithFraction.push(d)
     } else {
       nonLeafNoFraction.push(d)
@@ -1043,9 +1051,9 @@ function calcNodeClocks(
   shardsAvailable: number,
   isLeaf: boolean,
 ): { clocks: number[]; shardsUsed: number } {
-  const rawCount = Number(rawCountRaw.toFixed(4))
+  const rawCount = rawCountRaw
   if (rawCount <= 1) {
-    return { clocks: [Number(rawCount.toFixed(4))], shardsUsed: 0 }
+    return { clocks: [rawCount], shardsUsed: 0 }
   }
 
   if (isLeaf) {
@@ -1075,9 +1083,9 @@ function calcNodeClocks(
 
     // 如果总产能超出 rawCount，微调最后一台降频
     const total = clocks.reduce((sum, c) => sum + c, 0)
-    if (total > rawCount + 0.001) {
+    if (total > rawCount + CLOCK_OVERSHOOT_FUZZ) {
       const excess = total - rawCount
-      clocks[m - 1] = Number((clocks[m - 1]! - excess).toFixed(4))
+      clocks[m - 1] = clocks[m - 1]! - excess
     }
 
     return { clocks, shardsUsed: shardsNeeded }
@@ -1099,24 +1107,24 @@ function calcLeafNodeClocks(
   rawCountRaw: number,
   shardsAvailable: number,
 ): { clocks: number[]; shardsUsed: number } {
-  const rawCount = Number(rawCountRaw.toFixed(4))
+  const rawCount = rawCountRaw
   const clocks: number[] = []
   let unmet = rawCount
   let remaining = shardsAvailable
 
   // 用 250% 填满整台机器，最小化台数（每台需要 3 碎片）
-  while (remaining >= 3 && unmet > 2.5 + 0.005) {
+  while (remaining >= 3 && unmet > 2.5 + FUZZ) {
     clocks.push(2.5)
     unmet -= 2.5
     remaining -= 3
   }
 
   // 最后一台（或唯一一台）机器：碎片只用于抬高上限，频率精确按需求
-  if (remaining >= 1 && unmet > 1 + 0.005) {
+  if (remaining >= 1 && unmet > 1 + FUZZ) {
     const shardsNeeded = Math.ceil((unmet - 1) / 0.5)
     if (shardsNeeded <= remaining && shardsNeeded <= 3) {
       // 碎片足以覆盖需求 → 频率精确等于需求，不多用碎片
-      clocks.push(Number(unmet.toFixed(4)))
+      clocks.push(unmet)
       remaining -= shardsNeeded
       unmet = 0
     } else {
@@ -1130,14 +1138,14 @@ function calcLeafNodeClocks(
   }
 
   // 剩余不足 1 台的部分：整台 100% + 精确降频
-  if (unmet > 0.005) {
+  if (unmet > FUZZ) {
     const full100 = Math.floor(unmet)
     for (let i = 0; i < full100; i++) clocks.push(1)
     unmet -= full100
-    if (unmet > 0.005) {
-      clocks.push(Number(unmet.toFixed(4)))
+    if (unmet > FUZZ) {
+      clocks.push(unmet)
     } else if (unmet > 0 && clocks.length > 0) {
-      clocks[clocks.length - 1] = Number((clocks[clocks.length - 1]! + unmet).toFixed(4))
+      clocks[clocks.length - 1] = clocks[clocks.length - 1]! + unmet
     }
   }
 
@@ -1155,10 +1163,10 @@ function calcDefaultClocks(rawCount: number): { clocks: number[]; shardsUsed: nu
   const fullMachines = Math.floor(rawCount)
   for (let i = 0; i < fullMachines; i++) clocks.push(1)
   const remainder = rawCount - fullMachines
-  if (remainder > 0.005) {
-    clocks.push(Number(remainder.toFixed(4)))
+  if (remainder > FUZZ) {
+    clocks.push(remainder)
   } else if (remainder > 0 && clocks.length > 0) {
-    clocks[clocks.length - 1] = Number((clocks[clocks.length - 1]! + remainder).toFixed(4))
+    clocks[clocks.length - 1] = clocks[clocks.length - 1]! + remainder
   }
   return { clocks, shardsUsed: 0 }
 }

@@ -36,11 +36,11 @@ export function itemIcon(index: DataIndex | null | undefined, itemClass: string)
   return icon ? getIconUrl(icon) : undefined
 }
 
-/** 配方原料/产物的每分钟速率：amount / 制造时长(秒) × 60 */
+/** 配方原料/产物的每分钟速率：amount / 制造时长(秒) × 60，保持浮点原生精度 */
 export function ratePerMinute(amount: number, duration: number): number {
   if (duration <= 0 || amount <= 0) return 0
   const rpm = (amount / duration) * 60
-  return Number.isFinite(rpm) ? Number(rpm.toFixed(4)) : 0
+  return Number.isFinite(rpm) ? rpm : 0
 }
 
 /** 格式化每分钟速率，保留小数点后 3 位（整数省略小数，其余保留 3 位） */
