@@ -26,6 +26,7 @@
   --node-final: #52c41a;          /* 最终产品 - 绿色 */
   --node-byproduct: #4a9eff;     /* 副产物 - 蓝色 */
   --node-unused: #555555;        /* 未连接原料 - 深灰虚线 */
+  --node-somer: #a855f7;         /* 索莫晶体节点 - 紫色 */
 
   /* 间距 */
   --spacing-xs: 4px;

@@ -18,6 +18,9 @@ export interface ProductionNode {
   isUnused?: boolean
   /** 标记该节点为目标产出展示节点（绿色），由引擎在末尾自动添加 */
   isOutputTarget?: boolean
+  /** 该节点安装索莫晶体的机器台数。每台需装入「输入口数量」个晶体（见 config/buildingConfig 的 somerCrystalCost），
+   *  装够后该机产量翻倍、原料消耗不变、功率按二次方 */
+  somerMachines?: number
 }
 
 /** 生产图中的边 */
@@ -49,6 +52,8 @@ export interface PlanOptions {
 
   /** 可用于超频的能量碎片数量 */
   powerShards?: number
+  /** 可用的索莫晶体数量。用于加工建筑增产：一台机器需装「输入口数量」个晶体后产量翻倍（原料不变、功率平方） */
+  somerCount?: number
   /** 是否启用副产物自循环，默认关闭 */
   byproductRecycling?: boolean
 }

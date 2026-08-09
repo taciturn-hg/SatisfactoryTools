@@ -95,7 +95,7 @@ const byproductRecycling = ref<string>('on')
 watch(
   [selectedRecipes, selectedConverter, minerLevel, minerPurity,
    oilExtractor, oilPurity, waterExtractor, waterPurity, gasPurity,
-   powerShardCount, byproductRecycling],
+   powerShardCount, somerCount, byproductRecycling],
   () => emit('change'),
 )
 

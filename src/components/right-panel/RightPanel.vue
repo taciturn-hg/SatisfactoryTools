@@ -206,6 +206,7 @@ function runPlan() {
     extractorConfig,
     inputItems: inputRates.value,
     powerShards: paramsRef.value?.powerShardCount ?? 0,
+    somerCount: paramsRef.value?.somerCount ?? 0,
     byproductRecycling: paramsRef.value?.byproductRecycling === 'on',
   })
 

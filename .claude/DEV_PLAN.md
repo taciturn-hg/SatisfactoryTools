@@ -159,6 +159,18 @@
 - [x] 抽取 `src/lib/recipeOptions.ts`：`RecipeIoItem`/`RecipeOption` 类型 + `itemDisplayName`/`itemIcon`/`ratePerMinute`/`formatRate` 纯函数
 - [x] 抽取 `src/components/right-panel/RecipeOptionCard.vue`：配方卡片渲染（配方名 + 原料→产物）及样式，供 RightPanel/ItemDetail/PlanParams 共用，消除三处重复代码
 
+#### 3.3.3 索莫晶体增产（2026-08-09 新增）
+
+- [x] 配置页「可用的索莫晶体」输入接入引擎（原为占位，现传递 `somerCount` 到 PlanOptions）
+- [x] 引擎 `applySomerBoost`：仅加工建筑，逐颗贪心按每晶体边际收益（模拟装 1 颗的级联省总时钟）分配；机器数 ≥2 才考虑；装后入边按总时钟级联缩减上游原料需求
+- [x] 建筑槽位硬编码 `src/config/buildingConfig.ts`（依据官方 wiki Production amplifier）：构筑站/冶炼站 1 槽、装配站/铸造站/精炼站(`Build_OilRefinery`)/转换器 2 槽、制造站/混料站/量子编码器 4 槽、罐装站/手搓工作台/自动化工作台不可增幅；未配置默认 1；集中管理硬编码参数
+- [x] 部分增幅：一台机器每槽装 1 晶体，增幅 = 1 + k/slots（k=该台已装晶体数），装满足翻倍；分布按「先装满一台再开下一台」推导
+- [x] 超频联合优化：`applyOverclock` 晶体机优先吃碎片精确顶频（不超产，碎片只抬上限），`calcNodeClocksWithSomer` 实现；超频压缩机器数后裁剪 `somerMachines` 至机器容量
+- [x] 功率按 wiki 公式：`P = 基础功率 × (1 + 已填槽/总槽)² × 时钟^1.321928`（满增幅 ×4 功率），`useProductionPlan.totalPower` 实现
+- [x] 视觉：装晶体节点紫色背景 + 时钟文本内嵌 `*NSM` 紫色标记（如 `1×200%*1SM`），FlowNode + `--node-somer` 变量
+- [x] 收益度量（2026-08-09 修复）：从「省机器数」改为「省总时钟 Σclock」，解决整数台需求时装部分增幅收益为 0 导致永不装的贪心局部最优；`calcMachineGroupWithSomer` 改为晶体机按需求精确降频，避免级联缩减后产能虚高
+- [x] 验证：铁板/马达/铝锭多场景产能全部精确匹配（含输入替代 + 晶体）、满增幅×2、部分增幅、碎片+晶体联合优化、铝/钢/铁回归无回归
+
 #### 3.4 图转换与布局
 
 - [x] `graphTransformer.ts` — `ProductionGraph` → Vue Flow 格式

@@ -17,6 +17,7 @@ import type {
   ProductionGraph, ProductionNode, ProductionEdge,
   PlanOptions, ExtractorConfig,
 } from '@/types'
+import { somerSlots } from '../config/buildingConfig.ts'
 
 /* ==================== 辅助函数 ==================== */
 
@@ -167,6 +168,59 @@ function calcMachineGroup(
   }
 
   return { machineCount: rawCount, clocks }
+}
+
+/**
+ * 带索莫晶体的机器数量与时钟计算。
+ *
+ * 增幅机制（wiki）：一台建筑共 slots 个槽位，每槽装 1 个索莫晶体，
+ * 增幅按已填槽比例线性叠加，填满 slots 个后产出翻倍（100% 增幅）。
+ * 一台晶体机装 k 个晶体的等效产出 = 时钟 × 基准 × (1 + k/slots)。
+ *
+ * 分配时先装满一台（k = slots → ×2）再开下一台，因此晶体分布可推导：
+ *   fullMachines 台装满 slots 个，第 fullMachines 台装 partial 个，其余普通机。
+ * 晶体机时钟**按需求精确顶频、不超产**：需求不足时各晶体机降频，
+ * 避免级联缩减（输入替代/副产回灌）后产能虚高。
+ * 同等需求下机器数减少、入边原料需求按总时钟（Σclock）同步减少。
+ */
+function calcMachineGroupWithSomer(
+  rate: number,
+  perMachineRate: number,
+  somerTotal: number,
+  slots: number,
+  maxClock: number = 1,
+): {
+  machineCount: number
+  clocks: number[]
+} {
+  const s = Math.max(0, somerTotal)
+  const total = Math.max(1, slots)
+  if (s <= 0 || perMachineRate <= 0 || rate <= 0 || !Number.isFinite(rate)) {
+    return calcMachineGroup(rate, perMachineRate, maxClock)
+  }
+  const fullMachines = Math.floor(s / total)
+  const partial = s % total
+
+  // 各晶体机的增幅倍率（从满增幅到部分增幅）
+  const boosts: number[] = []
+  for (let i = 0; i < fullMachines; i++) boosts.push(2)
+  if (partial > 0) boosts.push(1 + partial / total)
+
+  const clocks: number[] = []
+  let remainingRate = rate
+
+  // 晶体机按需求精确降频：每台时钟 = min(maxClock, 剩余需求 / 该机等效产能)
+  // 优先给满增幅机（增幅×2，同等时钟产出最高）分配需求
+  for (const boost of boosts) {
+    if (remainingRate <= FUZZ) break
+    const clock = Math.min(maxClock, remainingRate / (perMachineRate * boost))
+    clocks.push(clock)
+    remainingRate -= perMachineRate * boost * clock
+  }
+
+  const normal = calcMachineGroup(Math.max(0, remainingRate), perMachineRate, maxClock)
+  const allClocks = [...clocks, ...normal.clocks]
+  return { machineCount: allClocks.length, clocks: allClocks }
 }
 
 /**
@@ -474,6 +528,9 @@ export function planProduction(index: DataIndex, options: PlanOptions): Producti
     applyByproductRecycling(graph, index, options)
   }
   applyInputItems(graph, index, options)
+  // 索莫晶体先于超频分配：基于当前（100%）机器数贪心装晶体、级联缩减上游原料需求；
+  // 随后 applyOverclock 感知 somerMachines，把晶体机优先顶满碎片（250%×2 = 有效 500%）。
+  applySomerBoost(graph, index, options)
   applyOverclock(graph, index, options)
 
   // 为每个深度 0 的生产节点添加目标产出展示节点
@@ -712,12 +769,13 @@ function reduceNodeRateInner(
 
   node.rate = newRate
 
-  // 重算该节点的台数
+  // 重算该节点的台数（感知索莫晶体：晶体机产量翻倍、原料不变）
   if (node.recipeUsed) {
     const mainProduct = node.recipeUsed.products.find(p => p.itemClass === node.itemClass)
     if (!mainProduct) return
     const perMachineRate = ratePerMinute(mainProduct.amount, node.recipeUsed.manufactoringDuration)
-    const group = calcMachineGroup(node.rate, perMachineRate)
+    const slots = somerSlots(node.machineType) ?? 1
+    const group = calcMachineGroupWithSomer(node.rate, perMachineRate, node.somerMachines ?? 0, slots)
     node.machineCount = group.machineCount
     node.machineClocks = group.clocks
 
@@ -741,10 +799,11 @@ function reduceNodeRateInner(
       }
     }
 
-    // 原料需求用量比推算：ingredientAmount / mainProductAmount * node.rate
-    // 用原生浮点，避免 toFixed 截断导致的精度误差
+    // 原料需求用量 = 总时钟 × 单机原料速率。
+    // 对普通节点与「rate × 原料比」数学等价；对晶体节点正确反映「原料不变、产量翻倍」
+    // 导致的机器数（总时钟）减少。用原生浮点，避免 toFixed 截断导致的精度误差。
     for (const ingredient of node.recipeUsed.ingredients) {
-      const newIngredientRate = node.rate * (ingredient.amount / mainProduct.amount)
+      const newIngredientRate = totalClock * ratePerMinute(ingredient.amount, node.recipeUsed.manufactoringDuration)
 
       const edge = graph.edges.find(
         e => e.targetNodeId === node.id && e.itemClass === ingredient.itemClass
@@ -931,7 +990,187 @@ function applyByproductRecycling(
   }
 }
 
+/* ==================== 索莫晶体分配 ==================== */
+
+/**
+ * 索莫晶体增产分配。
+ *
+ * 机制：仅限加工建筑。一台机器需装入「输入口数量」个晶体（somerCrystalCost，
+ * 见 config/buildingConfig）后产量翻倍，但原料消耗不变、时钟不变；
+ * 因此同需求下机器数减少（总时钟 Σclock 减少），该节点入边原料需求随之减少，
+/**
+ * 索莫晶体增产分配。
+ *
+ * 增幅机制（wiki）：一台建筑共 slots 个槽位，每槽装 1 个索莫晶体，
+ * 增幅按已填槽比例线性叠加（1/slots per 晶体），填满 slots 个后产出翻倍。
+ * 晶体不改变原料消耗与时钟；因此同需求下机器数减少（总时钟 Σclock 减少），
+ * 该节点入边原料需求随之减少，并沿入边递归级联减少上游各节点的需求与机器数。
+ * 增幅功率按 wiki 公式（见 useProductionPlan.totalPower）。
+ *
+ * 分配策略：逐颗贪心按边际收益。每轮对每个合格节点模拟「装 1 个晶体
+ * （填入该节点某一台机器的一个槽位）+ 级联缩减」，统计全图省下的机器数
+ * 作为该晶体的边际收益，取收益最大者真正落子，然后重算其余候选
+ * （级联可能使上游节点机器数降至 < 2 而不再合格）。直到晶体用完或
+ * 所有候选收益 ≤ 0。
+ *
+ * 时序：在 applyOverclock 之前执行（基于 100% 时钟评估机器数）。
+ * 超频阶段会感知 somerMachines，把晶体机优先顶满碎片。
+ */
+function applySomerBoost(
+  graph: ProductionGraph,
+  index: DataIndex,
+  options: PlanOptions,
+): void {
+  const totalSomers = options.somerCount ?? 0
+  if (totalSomers <= 0) return
+
+  const candidates = graph.nodes.filter(
+    n => n.recipeUsed && !n.isByproduct && !n.isUnused && !n.isOutputTarget,
+  )
+  if (candidates.length === 0) return
+
+  let remaining = totalSomers
+
+  while (remaining > 0) {
+    let bestNode: ProductionNode | null = null
+    let bestGain = 0
+
+    for (const node of candidates) {
+      if (!graph.nodes.includes(node)) continue // 可能已被级联删除
+      const slots = somerSlots(node.machineType) ?? 1 // 未配置默认 1
+      if (slots <= 0) continue // 不可增幅（如罐装站）
+      const machineCount = node.machineClocks.length
+      if (machineCount < 2) continue // 机器数 < 2 时装晶体不省机器
+      if ((node.somerMachines ?? 0) >= machineCount * slots) continue // 已饱和（所有槽位填满）
+
+      const gain = evaluateSomerGain(node, graph, index, options)
+      if (gain > bestGain) {
+        bestGain = gain
+        bestNode = node
+      }
+    }
+
+    if (!bestNode || bestGain <= FUZZ) break
+
+    applySomerToNode(bestNode, graph, index, options)
+    remaining--
+  }
+}
+
+/**
+ * 评估在 node 上装 1 个晶体的边际收益（全图省下的总时钟 Σclock，含级联）。
+ * 原料需求 = 总时钟 × 单机原料，省时钟 = 省原料 = 省上游机器，是正确经济度量。
+ * 相比「省机器数」：整数台需求时装部分增幅也能体现收益（时钟降了机器没降），
+ * 避免贪心局部最优陷阱。通过克隆图模拟，不改动真实图。
+ */
+function evaluateSomerGain(
+  node: ProductionNode,
+  graph: ProductionGraph,
+  index: DataIndex,
+  options: PlanOptions,
+): number {
+  const clone: ProductionGraph = {
+    nodes: graph.nodes.map(n => ({ ...n, machineClocks: [...n.machineClocks] })),
+    edges: graph.edges.map(e => ({ ...e })),
+  }
+  const before = countTotalClock(clone)
+  const cloneNode = clone.nodes.find(n => n.id === node.id)
+  if (!cloneNode) return 0
+  applySomerToNode(cloneNode, clone, index, options)
+  return before - countTotalClock(clone)
+}
+
+/** 统计全图生产节点总时钟 Σclock（不含副产物/输入/产出展示节点） */
+function countTotalClock(graph: ProductionGraph): number {
+  let total = 0
+  for (const n of graph.nodes) {
+    if (n.isByproduct || n.isUnused || n.isOutputTarget) continue
+    total += n.machineClocks.reduce((s, c) => s + c, 0)
+  }
+  return total
+}
+
+/**
+ * 在 node 上真实装 1 个晶体：somerMachines +1（记录晶体总数），
+ * 重算机器数与时钟，更新出边（副产物按新总时钟）与入边原料需求，
+ * 并沿入边递归级联缩减上游。
+ */
+function applySomerToNode(
+  node: ProductionNode,
+  graph: ProductionGraph,
+  index: DataIndex,
+  options: PlanOptions,
+): void {
+  node.somerMachines = (node.somerMachines ?? 0) + 1
+  if (!node.recipeUsed) return
+  const mainProduct = node.recipeUsed.products.find(p => p.itemClass === node.itemClass)
+  if (!mainProduct) return
+  const perMachineRate = ratePerMinute(mainProduct.amount, node.recipeUsed.manufactoringDuration)
+  const slots = somerSlots(node.machineType) ?? 1
+  const group = calcMachineGroupWithSomer(node.rate, perMachineRate, node.somerMachines!, slots, 1)
+  node.machineCount = group.machineCount
+  node.machineClocks = group.clocks
+  const totalClock = group.clocks.reduce((s, c) => s + c, 0)
+
+  // 更新出边：主产物不变（node.rate），副产物按新总时钟
+  for (const edge of graph.edges) {
+    if (edge.sourceNodeId !== node.id) continue
+    if (edge.itemClass === node.itemClass) {
+      edge.flowRate = node.rate
+    } else {
+      const byRate = ratePerMinute(
+        node.recipeUsed.products.find(p => p.itemClass === edge.itemClass)?.amount ?? 0,
+        node.recipeUsed.manufactoringDuration,
+      ) * totalClock
+      edge.flowRate = byRate
+      const byNode = graph.nodes.find(n => n.id === edge.targetNodeId && n.isByproduct)
+      if (byNode) byNode.rate = byRate
+    }
+  }
+
+  // 入边原料需求 = 总时钟 × 单机原料，随总时钟减少而减少，级联缩减上游
+  for (const ingredient of node.recipeUsed.ingredients) {
+    const newIngredientRate = totalClock * ratePerMinute(ingredient.amount, node.recipeUsed.manufactoringDuration)
+    const edge = graph.edges.find(
+      e => e.targetNodeId === node.id && e.itemClass === ingredient.itemClass,
+    )
+    if (!edge) continue
+    const oldIngredientRate = edge.flowRate
+    edge.flowRate = newIngredientRate
+    const sourceNode = graph.nodes.find(n => n.id === edge.sourceNodeId)
+    if (!sourceNode || sourceNode.isByproduct) continue
+    reduceNodeRateInner(sourceNode, graph, index, options, oldIngredientRate - newIngredientRate, new Set())
+  }
+}
+
 /* ==================== 超频分配 ==================== */
+
+/**
+ * 同步节点入边流量：按当前总时钟重算原料需求，并级联缩减上游。
+ * 用于超频后总时钟变化（晶体机时钟被顶高、普通机减少）时修正入边。
+ */
+function syncNodeInputs(
+  node: ProductionNode,
+  graph: ProductionGraph,
+  index: DataIndex,
+  options: PlanOptions,
+): void {
+  if (!node.recipeUsed) return
+  const totalClock = node.machineClocks.reduce((s, c) => s + c, 0)
+  for (const ingredient of node.recipeUsed.ingredients) {
+    const newRate = totalClock * ratePerMinute(ingredient.amount, node.recipeUsed.manufactoringDuration)
+    const edge = graph.edges.find(
+      e => e.targetNodeId === node.id && e.itemClass === ingredient.itemClass,
+    )
+    if (!edge) continue
+    const diff = edge.flowRate - newRate
+    if (Math.abs(diff) <= FUZZ) continue
+    edge.flowRate = newRate
+    const sourceNode = graph.nodes.find(n => n.id === edge.sourceNodeId)
+    if (!sourceNode || sourceNode.isByproduct) continue
+    reduceNodeRateInner(sourceNode, graph, index, options, diff, new Set())
+  }
+}
 
 /**
  * 获取节点单台机器的基准产量/分钟。
@@ -984,14 +1223,17 @@ function applyOverclock(
 
   if (demands.length === 0) return
 
-  // 分组
+  // 分组（晶体节点单独一类：碎片优先给晶体机，边际收益 ×2）
   const leaf: typeof demands = []
+  const somerNonLeaf: typeof demands = []
   const nonLeafWithFraction: typeof demands = []
   const nonLeafNoFraction: typeof demands = []
 
   for (const d of demands) {
     if (d.isLeaf) {
       leaf.push(d)
+    } else if (d.node.somerMachines && d.node.somerMachines > 0) {
+      somerNonLeaf.push(d)
     } else if (Math.abs(d.rawCount - Math.round(d.rawCount)) > FUZZ) {
       // 含显著小数部分 → 需要消除降频；%1 单侧比较会漏掉下偏整数噪声
       // （如 rawCount = n − 1e-15 时 %1 ≈ 1），需按到最近整数的距离双向判整
@@ -1030,7 +1272,31 @@ function applyOverclock(
     d.node.machineCount = clocks.length
   }
 
-  // ··· 第 3 轮：所有非叶子节点合流，分配剩余碎片 ···
+  // ··· 第 3 轮：晶体节点优先（碎片边际收益 ×2）···
+  somerNonLeaf.sort((a, b) => b.rawCount - a.rawCount)
+  for (const d of somerNonLeaf) {
+    if (remaining <= 0) break
+    const { clocks, shardsUsed } = calcNodeClocksWithSomer(
+      d.rawCount,
+      d.node.somerMachines ?? 0,
+      somerSlots(d.node.machineType) ?? 1,
+      remaining,
+    )
+    d.node.machineClocks = clocks
+    d.node.machineCount = clocks.length
+    // 超频可能压缩机器数，晶体总数超出机器容量（clocks.length × slots）时裁剪，
+    // 避免「装 6 颗但只剩 1 台（容量 4）」的物理不符
+    const slots = somerSlots(d.node.machineType) ?? 1
+    const capacity = clocks.length * slots
+    if ((d.node.somerMachines ?? 0) > capacity) {
+      d.node.somerMachines = capacity
+    }
+    remaining -= shardsUsed
+    // 超频改变了总时钟（晶体机顶高、普通机减少），同步入边并级联缩减上游
+    syncNodeInputs(d.node, graph, index, options)
+  }
+
+  // ··· 第 4 轮：其余非叶子节点合流，分配剩余碎片 ···
   const allNonLeaf = [...nonLeafWithFraction, ...nonLeafNoFraction]
   allNonLeaf.sort((a, b) => b.rawCount - a.rawCount)
   for (const d of allNonLeaf) {
@@ -1040,6 +1306,72 @@ function applyOverclock(
     d.node.machineCount = clocks.length
     remaining -= shardsUsed
   }
+}
+
+/**
+ * 对带索莫晶体的节点计算超频分配。
+ *
+ * 增幅按槽位比例：一台建筑 slots 槽，装 k 个晶体的机器增幅倍率 = 1 + k/slots
+ * （填满 slots 个即翻倍 ×2）。somerMachines 为该节点已装晶体总数，分布按
+ * 「先装满一台再开下一台」推导：full 台装满 slots，之后 1 台装 partial 个。
+ * 晶体机等效产出 = 时钟 × 基准 × 增幅倍率，时钟**精确按需求顶频、不超产**。
+ * 碎片只抬高时钟上限，剩余需求由普通机按 calcNodeClocks 分配。
+ */
+function calcNodeClocksWithSomer(
+  rawCount: number,
+  somerMachines: number,
+  slots: number,
+  shardsAvailable: number,
+): { clocks: number[]; shardsUsed: number } {
+  const s = Math.max(0, somerMachines)
+  const total = Math.max(1, slots)
+  if (s <= 0) return calcNodeClocks(rawCount, shardsAvailable, false)
+
+  const fullMachines = Math.floor(s / total)
+  const partial = s % total
+
+  const clocks: number[] = []
+  let remainingShards = shardsAvailable
+  let remainingRaw = rawCount
+  let remainingSomers = fullMachines
+
+  // 装满 slots 的晶体机（增幅 ×2）：等效产出 = 时钟 × 2
+  for (let i = 0; i < fullMachines && remainingRaw > FUZZ; i++) {
+    const perClock = Math.min(2.5, remainingRaw / (2 * remainingSomers))
+    const clock = placeCrystalClock(perClock, remainingShards)
+    const shardUsed = clock > 1 ? Math.min(3, Math.ceil((clock - 1) / 0.5)) : 0
+    clocks.push(clock)
+    remainingShards = Math.max(0, remainingShards - shardUsed)
+    remainingRaw -= clock * 2
+    remainingSomers--
+  }
+
+  // 装了 partial 个晶体的最后一台（增幅 1 + partial/slots）
+  if (partial > 0 && remainingRaw > FUZZ) {
+    const boost = 1 + partial / total
+    const perClock = Math.min(2.5, remainingRaw / boost)
+    const clock = placeCrystalClock(perClock, remainingShards)
+    const shardUsed = clock > 1 ? Math.min(3, Math.ceil((clock - 1) / 0.5)) : 0
+    clocks.push(clock)
+    remainingShards = Math.max(0, remainingShards - shardUsed)
+    remainingRaw -= clock * boost
+  }
+
+  // 剩余需求由普通机补齐
+  if (remainingRaw > FUZZ) {
+    const { clocks: normalClocks, shardsUsed } = calcNodeClocks(remainingRaw, remainingShards, false)
+    clocks.push(...normalClocks)
+    remainingShards -= shardsUsed
+  }
+
+  return { clocks, shardsUsed: shardsAvailable - remainingShards }
+}
+
+/** 在可用碎片内计算单台机器的时钟：精确按需求、碎片不足时取碎片允许的最高值 */
+function placeCrystalClock(perClock: number, shardsAvailable: number): number {
+  const needShards = perClock > 1 ? Math.min(3, Math.ceil((perClock - 1) / 0.5)) : 0
+  if (shardsAvailable >= needShards) return perClock
+  return Math.min(perClock, 1 + shardsAvailable * 0.5)
 }
 
 /**

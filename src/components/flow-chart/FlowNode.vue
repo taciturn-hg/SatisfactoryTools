@@ -15,10 +15,25 @@ const props = defineProps<{
     itemIcon?: string
     totalMachines?: number
     isOverclocked?: boolean
+    somerMachines?: number
+    machineType?: string | null
   }
 }>()
 
+/**
+ * 把时钟文本拆成片段，索莫晶体标记（*NSM）用紫色渲染。
+ * 例："2×100%, 1×200%*1SM" → [{t:'2×100%, '},{t:'1×200%'},{t:'*1SM', sm:true}]
+ */
+const clockFragments = computed(() => {
+  const info = props.data.clockInfo ?? ''
+  if (!info) return []
+  const parts = info.split(/(\*[0-9]+SM)/g).filter(Boolean)
+  return parts.map(p => ({ text: p, sm: /^\*[0-9]+SM$/.test(p) }))
+})
+
 const borderColor = computed(() => {
+  // 索莫晶体节点：背景紫色优先于类型色
+  if ((props.data.somerMachines ?? 0) > 0) return 'var(--node-somer)'
   const map: Record<string, string> = {
     resource: 'var(--node-resource)',
     intermediate: 'var(--node-intermediate)',
@@ -47,7 +62,7 @@ const handleStyle = {
 <template>
   <div
     class="flow-node"
-    :class="{ 'node-overclocked': data.isOverclocked }"
+    :class="{ 'node-overclocked': data.isOverclocked, 'node-somer': (data.somerMachines ?? 0) > 0 }"
     :style="{ borderColor, borderStyle }"
   >
     <div class="node-content">
@@ -62,7 +77,12 @@ const handleStyle = {
         <div class="product-line">{{ data.name }} <span class="rate-tag">产出 {{ formatRate(data.rate) }}/min</span></div>
         <div class="machine-line" v-if="data.clockInfo">
           {{ data.totalMachines ?? Math.ceil(data.machineCount || 0) }}台
-          <span class="clock-detail">{{ data.clockInfo }}</span>
+          <span class="clock-detail">
+            <template v-for="(frag, i) in clockFragments" :key="i">
+              <span v-if="frag.sm" class="somer-text">{{ frag.text }}</span>
+              <template v-else>{{ frag.text }}</template>
+            </template>
+          </span>
         </div>
       </div>
     </div>
@@ -85,6 +105,10 @@ const handleStyle = {
 }
 .node-overclocked {
   box-shadow: 0 0 12px 2px rgba(255, 200, 50, 0.5), 0 0 24px 4px rgba(255, 200, 50, 0.2);
+}
+.node-somer {
+  background: rgba(168, 85, 247, 0.18);
+  border-color: var(--node-somer) !important;
 }
 
 .node-content {
@@ -143,5 +167,10 @@ const handleStyle = {
 
 .clock-detail {
   color: var(--text-secondary);
+}
+
+.somer-text {
+  color: var(--node-somer);
+  font-weight: 700;
 }
 </style>
