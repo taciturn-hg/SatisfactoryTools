@@ -417,6 +417,7 @@ export function planProduction(index: DataIndex, options: PlanOptions): Producti
 
     node.recipeUsed = recipe
 
+
     // 从 producedIn 中选第一个实际生产建筑（跳过制作台手搓/建造枪）
     // 注意：BP_WorkshopComponent（装备工坊）应视为工厂建筑
     node.machineType = null
@@ -522,8 +523,14 @@ export function planProduction(index: DataIndex, options: PlanOptions): Producti
   }
 
   mergeDuplicateNodes(graph, index, options)
-  // 先做副产物自循环（副产物回灌扣减净需求），再应用用户输入的原料，
-  // 否则输入原料会先扣减尚未回灌时的需求，导致净缺口算错。
+  // 全局折叠：删掉「名义物品 ≠ 配方主产物」的假节点（如重油残渣用塑料配方展开），
+  // 让真节点接管其主产物需求，避免假节点副产与真产线撞车。
+  // 必须在副产回灌之前执行：折叠前假节点的名义出边是完整需求（如无烟火药需重油残渣 5），
+  // 若先回灌会把假节点名义边扣减到部分值，折叠重接后消费者需求缺失。
+  foldFakeNodes(graph, index, options)
+  // 折叠扩产了真节点，其副产量随之增加，需重新回灌/溢出处理，
+  // 否则扩产后的副产要么超量回灌（无输入场景 7.5 全灌给只需 5 的无烟火药），
+  // 要么随消费者删除而消失（有输入场景副产物完全不显示）。
   if (options.byproductRecycling) {
     applyByproductRecycling(graph, index, options)
   }
@@ -840,6 +847,176 @@ function reduceNodeRateInner(
       node.machineCount = group.machineCount
       node.machineClocks = group.clocks
     }
+  }
+}
+
+/* ==================== 全局折叠（消除假节点） ==================== */
+
+/**
+ * 折叠「假节点」：名义物品 ≠ 配方主产物的加工节点。
+ *
+ * 成因：需要「只能靠副产物获得」的物品（如重油残渣）时，selectRecipe 因无主产物
+ * 原生配方回退选了把目标当副产物的标准配方（塑料/橡胶），创建名义重油残渣、
+ * 实际产塑料的假节点。它副产的塑料与真塑料线撞车，导致供需错乱。
+ *
+ * 折叠语义：删假节点，让同主产物的真节点接管其主产物需求（需求补足），
+ * 假节点的名义产物需求由其他产线副产覆盖（applyByproductRecycling 已建立回灌边）。
+ */
+function foldFakeNodes(
+  graph: ProductionGraph,
+  index: DataIndex,
+  options: PlanOptions,
+): void {
+  // 收集假节点：有配方、名义物品 ≠ 配方主产物、非副产物/输入/产出展示
+  const fakes = graph.nodes.filter(
+    n => n.recipeUsed && !n.isByproduct && !n.isUnused && !n.isOutputTarget
+      && n.itemClass !== n.recipeUsed.products[0]?.itemClass,
+  )
+  if (fakes.length === 0) return
+
+  for (const fake of fakes) {
+    if (!graph.nodes.includes(fake)) continue
+    const mainClass = fake.recipeUsed!.products[0]!.itemClass
+
+    // 找同主产物的真节点（非假、非副产、非输入）
+    const realNodes = graph.nodes.filter(
+      n => n.recipeUsed && !n.isByproduct && !n.isUnused && !n.isOutputTarget
+        && n.id !== fake.id
+        && n.recipeUsed.products[0]?.itemClass === mainClass,
+    )
+    if (realNodes.length === 0) continue // 无真节点，无法接管，跳过
+
+    // 假节点主产物出边（撞车的供给）→ 目标消费者
+    const fakeMainEdges = graph.edges.filter(
+      e => e.sourceNodeId === fake.id && e.itemClass === mainClass,
+    )
+    if (fakeMainEdges.length === 0) {
+      // 假节点没有主产物出边（如名义需求未被回灌覆盖），直接删
+      removeNodeAndUpstream(fake, graph)
+      continue
+    }
+
+    // 检查真节点扩产后副产能否覆盖假节点的全部名义需求。
+    // 假节点名义需求（如无烟火药需重油残渣 5）将由真节点副产接管；
+    // 若副产不足（真塑料副产 2.5 < 需求 5），折叠会制造虚假供需
+    // （需求边显示 5 但实际只有 2.5 可供给），此时跳过折叠保留假节点补料。
+    const nominalClass = fake.itemClass
+    const nominalEdges = graph.edges.filter(
+      e => e.sourceNodeId === fake.id && e.itemClass === nominalClass,
+    )
+    if (nominalEdges.length > 0) {
+      const nominalDemand = nominalEdges.reduce((s, e) => s + e.flowRate, 0)
+      // 真节点副产该名义物品的总量（扩产后的总时钟 × 单机副产率）
+      const realTotalClock = realNodes[0]!.machineClocks.reduce((s, c) => s + c, 0)
+      let realByproductRate = 0
+      for (const prod of realNodes[0]!.recipeUsed!.products) {
+        if (prod.itemClass === nominalClass) {
+          realByproductRate = realTotalClock * ratePerMinute(prod.amount, realNodes[0]!.recipeUsed!.manufactoringDuration)
+          break
+        }
+      }
+      if (realByproductRate < nominalDemand - FUZZ) {
+        continue // 副产不足，跳过折叠，保留假节点
+      }
+    }
+
+    // 假节点主产物出边（撞车的供给）由副产节点消费，折叠不需要扩产真节点：
+    // 真节点的 rate 在展开时已按下游需求（如电路板塑料 15）算足，其副产
+    // 重油残渣自然覆盖假节点名义需求。扩产仅在「真节点副产不足」时需要，
+    // 但该场景已在上方「跳过折叠」分支处理（保留假节点补料）。
+
+    // 重建副产物节点与产生边，供重跑 applyByproductRecycling 按需求回灌/溢出展示。
+    // 供重跑 applyByproductRecycling 按需求回灌/溢出展示。
+    // 否则扩产后的副产边直接指向消费者（如塑料→无烟火药 7.5），
+    // 副产物节点已删，回灌逻辑找不到副产物来源，溢出无法展示。
+    rebuildByproductNodes(realNodes[0]!, graph, index)
+
+    // 重接假节点的名义出边（itemClass === 假节点.itemClass，如重油残渣→无烟火药）：
+    // 删假节点前，把这些「名义产物需求」边改接到真节点的副产物节点，
+    // 否则无烟火药失去重油残渣需求，applyByproductRecycling 无从回灌。
+    const fakeNominalClass = fake.itemClass
+    const realBpNode = graph.nodes.find(
+      n => n.isByproduct && n.itemClass === fakeNominalClass,
+    )
+    if (realBpNode) {
+      const nominalEdges = graph.edges.filter(
+        e => e.sourceNodeId === fake.id && e.itemClass === fakeNominalClass,
+      )
+      for (const ne of nominalEdges) {
+        addEdge(graph, realBpNode.id, ne.targetNodeId, ne.flowRate, fakeNominalClass)
+      }
+    }
+
+    // 删除假节点前，先沿其入边递归缩减上游 rate（假节点的原料需求随节点删除而消失）。
+    // 否则假节点消耗的原料（如原油 15）残留，导致上游 rate 虚高。
+    for (const edge of graph.edges) {
+      if (edge.targetNodeId !== fake.id) continue
+      const sourceNode = graph.nodes.find(n => n.id === edge.sourceNodeId)
+      if (!sourceNode || sourceNode.isByproduct) continue
+      reduceNodeRate(sourceNode, graph, index, options, edge.flowRate)
+    }
+
+    // 删除假节点及其所有边
+    removeNodeAndUpstream(fake, graph)
+  }
+}
+
+/**
+ * 为节点重建其配方的副产物结构：移除现有副产回灌边（指向消费者的），
+ * 重建「副产物节点 + 产生边」让 applyByproductRecycling 重新按需求回灌/溢出。
+ * 折叠扩产真节点后副产量变化，需重建让回灌逻辑生效。
+ */
+function rebuildByproductNodes(
+  node: ProductionNode,
+  graph: ProductionGraph,
+  index: DataIndex,
+): void {
+  if (!node.recipeUsed) return
+  const totalClock = node.machineClocks.reduce((s, c) => s + c, 0)
+  const mainClass = node.recipeUsed.products[0]?.itemClass
+
+  // 移除该节点所有指向消费者的副产回灌边（itemClass 不是主产物）
+  graph.edges = graph.edges.filter(
+    e => !(e.sourceNodeId === node.id && e.itemClass !== mainClass),
+  )
+  // 删除可能残留的副产物节点（该节点为唯一产生方）
+  const bpItemClasses = new Set(
+    node.recipeUsed.products.filter(p => p.itemClass !== mainClass).map(p => p.itemClass),
+  )
+  graph.nodes = graph.nodes.filter(n => {
+    if (!n.isByproduct || !bpItemClasses.has(n.itemClass)) return true
+    const otherProducer = graph.edges.some(
+      e => e.targetNodeId === n.id && e.sourceNodeId !== node.id,
+    )
+    return otherProducer // 保留有其他产生方的副产物节点
+  })
+
+  // 重建副产物节点与产生边（按新总时钟）。
+  // 复用已存在的同 itemClass 副产节点（更新 rate 与产生边），避免多产生方
+  // 场景（如塑料+橡胶都产重油残渣）创建重复副产节点。
+  for (const bp of node.recipeUsed.products) {
+    if (bp.itemClass === mainClass) continue
+    const bpRate = ratePerMinute(bp.amount, node.recipeUsed.manufactoringDuration) * totalClock
+    const existing = graph.nodes.find(
+      n => n.isByproduct && n.itemClass === bp.itemClass,
+    )
+    if (existing) {
+      // 复用：更新产生边流量，rate 由 applyByproductRecycling 重算（多产生方会合并）
+      addEdge(graph, node.id, existing.id, bpRate, bp.itemClass)
+      continue
+    }
+    const bpNode = addNode(graph, {
+      itemClass: bp.itemClass,
+      itemName: index.items.get(bp.itemClass)?.displayName || bp.itemClass,
+      rate: bpRate,
+      recipeUsed: null,
+      machineCount: 0,
+      machineClocks: [],
+      machineType: null,
+      depth: node.depth,
+      isByproduct: true,
+    })
+    addEdge(graph, node.id, bpNode.id, bpRate, bp.itemClass)
   }
 }
 
