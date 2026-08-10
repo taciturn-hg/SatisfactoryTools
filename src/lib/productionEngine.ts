@@ -752,9 +752,27 @@ function reduceNodeRateInner(
   reduceBy: number,
   visited: Set<string>,
 ): void {
+  // visited 记录「当前递归路径」（进入添加、返回移除），而非全局已访问。
+  // 这样共享节点（如铜锭同时供铜板与电线）可被多条入边路径各自缩减，
+  // 避免索莫晶体级联时电路板路径的缩减被电缆路径的 visited 跳过；
+  // 环（A→B→A）仍会被路径检测终止，防止死循环。
   if (visited.has(node.id)) return
   visited.add(node.id)
+  try {
+    reduceNodeRateInnerImpl(node, graph, index, options, reduceBy, visited)
+  } finally {
+    visited.delete(node.id)
+  }
+}
 
+function reduceNodeRateInnerImpl(
+  node: ProductionNode,
+  graph: ProductionGraph,
+  index: DataIndex,
+  options: PlanOptions,
+  reduceBy: number,
+  visited: Set<string>,
+): void {
   const newRate = Math.max(0, node.rate - reduceBy)
 
   // 速率降至 FUZZ 以下视为归零：去掉 toFixed(4) 后浮点残差（~1e-15）不再被截断成 0，
