@@ -759,9 +759,16 @@ function reduceNodeRateInner(
     for (const edge of graph.edges) {
       if (edge.targetNodeId !== node.id) continue
       const sourceNode = graph.nodes.find(n => n.id === edge.sourceNodeId)
-      if (sourceNode && !sourceNode.isByproduct) {
-        reduceNodeRateInner(sourceNode, graph, index, options, edge.flowRate, visited)
-      }
+      if (!sourceNode || sourceNode.isByproduct) continue
+      // 跳过副产物回灌边：该边流量由产生方副产物产量决定，不随消费者需求缩减。
+      // 判定：sourceNode 配方中 edge.itemClass 是「副产物」（非配方主产物）。
+      // 用配方主产物判断，能同时区分「真塑料节点的重油残渣副产边（跳过保护）」
+      // 与「资源节点的原料边（recipe=null，正常递归）」。
+      const recipe = sourceNode.recipeUsed
+      const mainProductClass = recipe?.products[0]?.itemClass
+      const isRecycledEdge = !!recipe && !!mainProductClass && edge.itemClass !== mainProductClass
+      if (isRecycledEdge) continue
+      reduceNodeRateInner(sourceNode, graph, index, options, edge.flowRate, visited)
     }
     removeNodeAndUpstream(node, graph)
     return
@@ -781,22 +788,23 @@ function reduceNodeRateInner(
 
     const totalClock = group.clocks.reduce((s, c) => s + c, 0)
 
-    // 更新出边（主产物取 node.rate，副产物按 totalClock 算）
+    // 更新副产物出边（流量 = 总时钟 × 单机副产物率）。
+    // 主产物出边不在此维护：它代表各消费者的需求，由消费者节点的入边重算
+    // （下方原料需求循环）与 applyInputItems 的按比例缩放来更新；
+    // 此处若覆盖成 node.rate，共享节点（多消费者）的所有主产物出边都会被
+    // 设为总产出，破坏分摊（如铜锭同时供铜板与电线，缩减后两条出边都变成 52.5）。
     for (const edge of graph.edges) {
       if (edge.sourceNodeId !== node.id) continue
-      if (edge.itemClass === node.itemClass) {
-        edge.flowRate = node.rate
-      } else {
-        const byRate = ratePerMinute(
-          node.recipeUsed!.products.find(p => p.itemClass === edge.itemClass)?.amount ?? 0,
-          node.recipeUsed!.manufactoringDuration,
-        ) * totalClock
-        edge.flowRate = byRate
-        // 同步副产物节点的 rate，保持「副产节点 ⇄ 产生边」一致，
-        // 否则副产物回灌会按失配的 rate 分配导致负流量
-        const byNode = graph.nodes.find(n => n.id === edge.targetNodeId && n.isByproduct)
-        if (byNode) byNode.rate = byRate
-      }
+      if (edge.itemClass === node.itemClass) continue
+      const byRate = ratePerMinute(
+        node.recipeUsed!.products.find(p => p.itemClass === edge.itemClass)?.amount ?? 0,
+        node.recipeUsed!.manufactoringDuration,
+      ) * totalClock
+      edge.flowRate = byRate
+      // 同步副产物节点的 rate，保持「副产节点 ⇄ 产生边」一致，
+      // 否则副产物回灌会按失配的 rate 分配导致负流量
+      const byNode = graph.nodes.find(n => n.id === edge.targetNodeId && n.isByproduct)
+      if (byNode) byNode.rate = byRate
     }
 
     // 原料需求用量 = 总时钟 × 单机原料速率。
@@ -1112,20 +1120,19 @@ function applySomerToNode(
   node.machineClocks = group.clocks
   const totalClock = group.clocks.reduce((s, c) => s + c, 0)
 
-  // 更新出边：主产物不变（node.rate），副产物按新总时钟
+  // 更新副产物出边（流量 = 总时钟 × 单机副产物率）。
+  // 主产物出边不在此维护：装晶体不改主产物率，主产物出边代表各消费者需求，
+  // 由消费者节点入边重算维护；覆盖成 node.rate 会破坏共享节点的分摊。
   for (const edge of graph.edges) {
     if (edge.sourceNodeId !== node.id) continue
-    if (edge.itemClass === node.itemClass) {
-      edge.flowRate = node.rate
-    } else {
-      const byRate = ratePerMinute(
-        node.recipeUsed.products.find(p => p.itemClass === edge.itemClass)?.amount ?? 0,
-        node.recipeUsed.manufactoringDuration,
-      ) * totalClock
-      edge.flowRate = byRate
-      const byNode = graph.nodes.find(n => n.id === edge.targetNodeId && n.isByproduct)
-      if (byNode) byNode.rate = byRate
-    }
+    if (edge.itemClass === node.itemClass) continue
+    const byRate = ratePerMinute(
+      node.recipeUsed.products.find(p => p.itemClass === edge.itemClass)?.amount ?? 0,
+      node.recipeUsed.manufactoringDuration,
+    ) * totalClock
+    edge.flowRate = byRate
+    const byNode = graph.nodes.find(n => n.id === edge.targetNodeId && n.isByproduct)
+    if (byNode) byNode.rate = byRate
   }
 
   // 入边原料需求 = 总时钟 × 单机原料，随总时钟减少而减少，级联缩减上游
