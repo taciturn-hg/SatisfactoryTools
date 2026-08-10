@@ -212,7 +212,12 @@ function calcMachineGroupWithSomer(
   // 晶体机按需求精确降频：每台时钟 = min(maxClock, 剩余需求 / 该机等效产能)
   // 优先给满增幅机（增幅×2，同等时钟产出最高）分配需求
   for (const boost of boosts) {
-    if (remainingRate <= FUZZ) break
+    if (remainingRate <= FUZZ) {
+      // 余量已在可忽略阈值内：置 0 交给普通机路径，避免 calcMachineGroup
+      // 生成一台 ~0% 时钟的幻影机器（rate≤FUZZ 时 rawCount 趋向 0，会产出幽灵台数）
+      remainingRate = 0
+      break
+    }
     const clock = Math.min(maxClock, remainingRate / (perMachineRate * boost))
     clocks.push(clock)
     remainingRate -= perMachineRate * boost * clock
@@ -786,12 +791,13 @@ function reduceNodeRateInnerImpl(
       const sourceNode = graph.nodes.find(n => n.id === edge.sourceNodeId)
       if (!sourceNode || sourceNode.isByproduct) continue
       // 跳过副产物回灌边：该边流量由产生方副产物产量决定，不随消费者需求缩减。
-      // 判定：sourceNode 配方中 edge.itemClass 是「副产物」（非配方主产物）。
-      // 用配方主产物判断，能同时区分「真塑料节点的重油残渣副产边（跳过保护）」
-      // 与「资源节点的原料边（recipe=null，正常递归）」。
+      // 判定用「edge.itemClass !== sourceNode.itemClass」而非「≠配方主产物」：
+      // 产生方的 itemClass 恒为它名义生产的物品，副产回灌边传的是副产物（≠ 名义物品），
+      // 而假节点（名义物品≠配方主产物，如重油残渣用塑料配方）的名义产物出边
+      // itemClass === sourceNode.itemClass，应正常缩减，避免消费者归零时上游 rate 残留虚高。
+      // 资源节点 recipe=null 无配方，无副产边，走正常递归。
       const recipe = sourceNode.recipeUsed
-      const mainProductClass = recipe?.products[0]?.itemClass
-      const isRecycledEdge = !!recipe && !!mainProductClass && edge.itemClass !== mainProductClass
+      const isRecycledEdge = !!recipe && edge.itemClass !== sourceNode.itemClass
       if (isRecycledEdge) continue
       reduceNodeRateInner(sourceNode, graph, index, options, edge.flowRate, visited)
     }
@@ -806,7 +812,7 @@ function reduceNodeRateInnerImpl(
     const mainProduct = node.recipeUsed.products.find(p => p.itemClass === node.itemClass)
     if (!mainProduct) return
     const perMachineRate = ratePerMinute(mainProduct.amount, node.recipeUsed.manufactoringDuration)
-    const slots = somerSlots(node.machineType) ?? 1
+    const slots = somerSlots(node.machineType) ?? 0
     const group = calcMachineGroupWithSomer(node.rate, perMachineRate, node.somerMachines ?? 0, slots)
     node.machineCount = group.machineCount
     node.machineClocks = group.clocks
@@ -1234,19 +1240,31 @@ function applySomerBoost(
 
   let remaining = totalSomers
 
+  // 增量评估缓存：装晶体只会级联缩减其上游链，未受影响候选的收益不变，可复用。
+  // 分配结果与全量重估完全一致（缓存命中基于精确的「上游未变」判定，非近似）。
+  const gainCache = new Map<string, number>()
+  /** 当前需要重估的候选 id 集合（上轮被装晶体级联触及的节点） */
+  const toReevaluate = new Set<string>()
+
   while (remaining > 0) {
     let bestNode: ProductionNode | null = null
     let bestGain = 0
 
     for (const node of candidates) {
       if (!graph.nodes.includes(node)) continue // 可能已被级联删除
-      const slots = somerSlots(node.machineType) ?? 1 // 未配置默认 1
-      if (slots <= 0) continue // 不可增幅（如罐装站）
+      const slots = somerSlots(node.machineType) ?? 0 // 未配置默认 0；显式 null（不可增幅）也归 0
+      if (slots <= 0) continue // 不可增幅（如罐装站/工作台）
       const machineCount = node.machineClocks.length
       if (machineCount < 2) continue // 机器数 < 2 时装晶体不省机器
       if ((node.somerMachines ?? 0) >= machineCount * slots) continue // 已饱和（所有槽位填满）
 
-      const gain = evaluateSomerGain(node, graph, index, options)
+      let gain: number
+      if (toReevaluate.has(node.id) || !gainCache.has(node.id)) {
+        gain = evaluateSomerGain(node, graph, index, options)
+        gainCache.set(node.id, gain)
+      } else {
+        gain = gainCache.get(node.id)!
+      }
       if (gain > bestGain) {
         bestGain = gain
         bestNode = node
@@ -1257,6 +1275,30 @@ function applySomerBoost(
 
     applySomerToNode(bestNode, graph, index, options)
     remaining--
+
+    // 收集被级联缩减的节点（装晶体 → 入边需求减少 → 缩减上游链），下一轮只重估它们；
+    // 其余候选的 rate/上游未变，gain 缓存可复用。
+    toReevaluate.clear()
+    collectAffectedUpstream(graph, bestNode, toReevaluate)
+  }
+}
+
+/**
+ * 收集从 start 沿入边可达的所有非副产节点（装晶体后会被级联缩减上游的集合）。
+ * 用于下一轮只重估这些候选的晶体收益，其余候选复用缓存。
+ */
+function collectAffectedUpstream(
+  graph: ProductionGraph,
+  start: ProductionNode,
+  out: Set<string>,
+): void {
+  if (!out.has(start.id)) out.add(start.id)
+  for (const edge of graph.edges) {
+    if (edge.targetNodeId !== start.id) continue
+    const src = graph.nodes.find(n => n.id === edge.sourceNodeId)
+    if (!src || src.isByproduct || src.isUnused || out.has(src.id)) continue
+    out.add(src.id)
+    collectAffectedUpstream(graph, src, out)
   }
 }
 
@@ -1309,7 +1351,7 @@ function applySomerToNode(
   const mainProduct = node.recipeUsed.products.find(p => p.itemClass === node.itemClass)
   if (!mainProduct) return
   const perMachineRate = ratePerMinute(mainProduct.amount, node.recipeUsed.manufactoringDuration)
-  const slots = somerSlots(node.machineType) ?? 1
+  const slots = somerSlots(node.machineType) ?? 0
   const group = calcMachineGroupWithSomer(node.rate, perMachineRate, node.somerMachines!, slots, 1)
   node.machineCount = group.machineCount
   node.machineClocks = group.clocks
@@ -1475,20 +1517,31 @@ function applyOverclock(
   }
 
   // ··· 第 3 轮：晶体节点优先（碎片边际收益 ×2）···
+  // 处理中 syncNodeInputs 会级联缩减上游索莫节点（若其待处理，rate 已变），
+  // 因此 rawCount 必须按当前 rate 实时重算，不能用第 1420 行捕获的旧值，
+  // 否则机器时钟按旧需求计算、与缩减后的 rate 不一致。
   somerNonLeaf.sort((a, b) => b.rawCount - a.rawCount)
   for (const d of somerNonLeaf) {
     if (remaining <= 0) break
+    const rawCountNow = d.node.rate / d.baseRate
+    if (rawCountNow <= 1) {
+      // 被上游级联缩减到 1 台以内：无需超频，时钟按当前需求重算
+      const normalGroup = calcMachineGroup(d.node.rate, d.baseRate, 1)
+      d.node.machineClocks = normalGroup.clocks
+      d.node.machineCount = normalGroup.clocks.length
+      continue
+    }
     const { clocks, shardsUsed } = calcNodeClocksWithSomer(
-      d.rawCount,
+      rawCountNow,
       d.node.somerMachines ?? 0,
-      somerSlots(d.node.machineType) ?? 1,
+      somerSlots(d.node.machineType) ?? 0,
       remaining,
     )
     d.node.machineClocks = clocks
     d.node.machineCount = clocks.length
     // 超频可能压缩机器数，晶体总数超出机器容量（clocks.length × slots）时裁剪，
     // 避免「装 6 颗但只剩 1 台（容量 4）」的物理不符
-    const slots = somerSlots(d.node.machineType) ?? 1
+    const slots = somerSlots(d.node.machineType) ?? 0
     const capacity = clocks.length * slots
     if ((d.node.somerMachines ?? 0) > capacity) {
       d.node.somerMachines = capacity

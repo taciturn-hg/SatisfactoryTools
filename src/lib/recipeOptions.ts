@@ -48,3 +48,35 @@ export function formatRate(rate: number): string {
   const rounded = Math.round(rate * 1000) / 1000
   return String(rounded)
 }
+
+/**
+ * 生成某物品的全部可制造配方下拉选项（原生在前、替代在后带「替代」前缀、解包带「解包:」前缀）。
+ * 不排除 Converter/解包配方——用户显式选择时引擎 alternatives 早返回直接采用。
+ * 资源类物品（水/煤/原油等）无配方可改，返回空数组（调用方据此隐藏下拉）。
+ */
+export function buildRecipeOptions(index: DataIndex, itemClass: string): RecipeOption[] {
+  const recipeList = index.recipes.get(itemClass)
+  if (!recipeList || recipeList.length === 0) return []
+  return [...recipeList]
+    .sort((a, b) => Number(a.isAlternate) - Number(b.isAlternate))
+    .map(r => {
+      const displayName = r.className.startsWith('Recipe_Unpackage')
+        ? `解包:${r.displayName}`
+        : r.displayName
+      return {
+        value: r.className,
+        label: displayName,
+        displayName,
+        ingredients: r.ingredients.map(i => ({
+          name: itemDisplayName(index, i.itemClass),
+          icon: itemIcon(index, i.itemClass),
+          rate: ratePerMinute(i.amount, r.manufactoringDuration),
+        })),
+        products: r.products.map(p => ({
+          name: itemDisplayName(index, p.itemClass),
+          icon: itemIcon(index, p.itemClass),
+          rate: ratePerMinute(p.amount, r.manufactoringDuration),
+        })),
+      }
+    })
+}

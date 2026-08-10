@@ -102,7 +102,7 @@
 
 #### 2.4 弹窗组件 (`src/components/modals/`)
 
-- [ ] `NodeDetailModal.vue` — 点击节点后弹出的详情弹窗（已搁置，后续阶段实现）
+- [x] `NodeDetailModal.vue` — 点击节点后弹出的详情弹窗（2026-08-10 实现：物品信息 + 配方下拉改配方 + 恢复默认 + 超频/晶体展示）
 - [ ] `SavePlanModal.vue` — 方案命名保存弹窗（已搁置，后续阶段实现）
 
 #### 2.5 页面 + 路由
@@ -377,6 +377,41 @@
 **修复**：`reduceNodeRateInner` 的 visited 改为「当前递归路径」（进入添加、返回移除，用 try/finally 保证清理），拆分出 `reduceNodeRateInnerImpl` 承载原逻辑。共享节点可被多条入边路径各自缩减并正确累积；环（A→B→A）仍被路径检测终止。
 
 **验证**：追踪步枪弹 somer=0/1/2/3 铜锭 rate 均 = 出边和（52.5/35/22.5/22.5，差 0）；主场景 6 组合含 2 晶体全通过（铜锭 22.5 = 10+12.5）；铝锭/铁板晶体场景、索莫晶体 8 场景、广泛产线全部无回归；type-check、oxlint 通过。
+
+### 5.11 已解决：加工节点弹窗改配方 + 配方覆盖三处同步
+
+**状态**：已解决（2026-08-10）
+
+**功能**：点击流程图节点弹出 `NodeDetailModal`，可改该物品配方（原生/替代/解包全部列出）、恢复默认，并展示建筑/台数/时钟（SM 染紫）/能量碎片数/晶体总数。配方覆盖存于 `uiStore.recipeOverrides`（itemClass → recipeClass），在 `buildAlternativeMap` 中最高优先并入引擎。
+
+**三处同步规则**（「最近一次操作」为权威来源）：
+- 弹窗改配方 → 写 `recipeOverrides`，watch 同步产出页下拉 + 配置页 `selectedRecipes`（替代加入、原生/解包取代旧配方）→ 重算
+- 产出页下拉切换 → 清除该物品 `recipeOverrides` 覆盖 + 写 `outputRecipes` → 重算
+- 弹窗恢复默认 → `restoreDefaultRecipe` 清 `recipeOverrides` + `outputRecipes` + 配置页 `selectedRecipes` 三处 → 重算
+
+**修复的问题**：初版 `recipeOverrides` 最高优先会吞掉产出页下拉切换（图不更新）；弹窗选配方不同步配置页下拉。统一为上述规则后三处显示始终一致。
+
+**新增文件**：`src/components/modals/NodeDetailModal.vue`；`src/lib/recipeOptions.ts` 新增 `buildRecipeOptions` 纯函数。
+
+**验证**：type-check、oxlint 通过；引擎级数据流验证（覆盖塑料→塑料图不变、清除覆盖回默认、覆盖铜板→热压铜板后铜锭 82.5→60 整图重算）。
+
+### 5.12 已解决：code review 发现的 5 个引擎缺陷
+
+**状态**：已解决（2026-08-10）
+
+**来源**：`/code-review medium` 审查节点弹窗改配方功能时，对 `productionEngine.ts` 的既有代码发现 5 个缺陷，逐一修复：
+
+**修1（晶体误装不可增幅建筑）**：`somerSlots() ?? 1` 把显式 `null`（不可增幅，如罐装站/工作台）与 `undefined`（未配置）混为一谈，罐装站等被当作 1 槽建筑分配索莫晶体并双倍产出。4 处引擎调用点改为 `?? 0`，`slots <= 0` 显式排除不可增幅建筑。
+
+**修2（假节点归零上游残留）**：`reduceNodeRateInner` 归零分支判定副产回灌边用「`edge.itemClass ≠ 配方主产物`」，误伤假节点（名义物品≠主产物，如重油残渣用塑料配方）的名义产物出边——消费者归零时假节点不缩减、上游 rate 残留虚高。改为「`edge.itemClass !== sourceNode.itemClass`」：产生方 itemClass 恒为名义物品，副产边传副产物（≠名义物品）仍跳过保护，假节点名义出边正常缩减。
+
+**修3（超频级联时钟不一致）**：`applyOverclock` 第 3 轮处理索莫节点时 `rawCount` 用循环前捕获的旧值，而 `syncNodeInputs` 级联缩减了另一待处理索莫节点的 rate → 机器时钟与缩减后 rate 不一致。改为处理时按 `node.rate / baseRate` 实时重算；被级联缩减到 ≤1 台时按当前需求重算普通时钟。
+
+**修4（晶体路径幽灵机器）**：`calcMachineGroupWithSomer` 剩余需求 ≤FUZZ 时 break，余量（微小）交给 `calcMachineGroup` 生成一台 ~0% 时钟的幻影机器。改为 break 时置 0，不再生成幽灵台数。
+
+**修6（晶体收益评估克隆开销）**：`evaluateSomerGain` 对每候选每颗晶体克隆整图，O(晶体×候选×图规模)。改为增量缓存：装晶体只级联缩减其上游链，未受影响候选的 gain 复用缓存，每轮只重估被级联触及的节点。分配结果与全量重估完全一致（基于精确的「上游未变」判定，非近似）。
+
+**验证**：type-check、oxlint、eslint 通过；verify-fix 6 组合、verify-somer 8 场景、verify-aluminum、repro-turbofuel 全部与修复前一致（「2晶体」场景塑料=10 为修复前既有行为，经 git stash 对比确认非回归）；scan-byproduct 仅暗物质系列 5 项待办（见 5.1）不变。
 
 ### 5.1 暗物质系列产线无法展开（待处理）
 

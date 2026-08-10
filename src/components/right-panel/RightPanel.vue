@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useDataStore } from '@/stores/dataStore'
+import { useUiStore } from '@/stores/uiStore'
 import { planProduction } from '@/lib/productionEngine'
 import { autoLayout } from '@/lib/layoutHelper'
 import ItemDetail from '@/components/right-panel/ItemDetail.vue'
@@ -17,6 +18,7 @@ const emit = defineEmits<{
 }>()
 
 const dataStore = useDataStore()
+const uiStore = useUiStore()
 
 const activeTab = ref<'output' | 'input' | 'config'>('output')
 
@@ -144,6 +146,11 @@ function buildAlternativeMap(): Map<string, string> {
   for (const [itemClass, recipeClass] of outputRecipes.value) {
     map.set(itemClass, recipeClass)
   }
+
+  // 节点弹窗改配方的覆盖（itemClass → recipeClass）最后并入，最高优先。
+  for (const [itemClass, recipeClass] of uiStore.recipeOverrides) {
+    map.set(itemClass, recipeClass)
+  }
   return map
 }
 
@@ -170,7 +177,32 @@ function resetList() {
   outputRates.value = new Map()
   inputRates.value = new Map()
   outputRecipes.value = new Map()
+  uiStore.clearRecipeOverrides()
   emit('reset')
+}
+
+/**
+ * 节点弹窗「恢复默认配方」：彻底清除该物品在
+ * recipeOverrides + outputRecipes + 配置页 selectedRecipes 三处的指定，
+ * 让引擎完全回到默认选配。
+ */
+function restoreDefaultRecipe(itemClass: string): void {
+  uiStore.clearRecipeOverride(itemClass)
+  if (outputRecipes.value.has(itemClass)) {
+    const next = new Map(outputRecipes.value)
+    next.delete(itemClass)
+    outputRecipes.value = next
+  }
+  if (paramsRef.value) {
+    const next = (paramsRef.value.selectedRecipes ?? []).filter((r) => {
+      const rec = findRecipeByClass(r)
+      return !(rec && rec.products.some((p) => p.itemClass === itemClass))
+    })
+    if (next.length !== (paramsRef.value.selectedRecipes ?? []).length) {
+      paramsRef.value.selectedRecipes = next
+    }
+  }
+  debounceRun()
 }
 
 const paramsRef = ref<InstanceType<typeof PlanParams> | null>(null)
@@ -223,6 +255,46 @@ function debounceRun() {
 watch(
   [outputItems, inputItems, outputRates, inputRates],
   () => debounceRun(),
+)
+
+// 节点弹窗改配方（recipeOverrides）变化 → 同步产出页下拉 + 配置页已选配方，并自动重算。
+// 覆盖是「最近一次操作」的权威来源：产出页/配置页显示随之更新，保证三处一致。
+watch(
+  () => uiStore.recipeOverrides,
+  (overrides) => {
+    // 同步产出页下拉：弹窗给产出物品选配方时，产出页下拉同步显示
+    const nextOutput = new Map(outputRecipes.value)
+    let outputChanged = false
+    for (const [itemClass, recipeClass] of overrides) {
+      if (outputItems.value.includes(itemClass) && nextOutput.get(itemClass) !== recipeClass) {
+        nextOutput.set(itemClass, recipeClass)
+        outputChanged = true
+      }
+    }
+    if (outputChanged) outputRecipes.value = nextOutput
+
+    // 同步配置页 selectedRecipes：弹窗选替代配方 → 加入已选列表；
+    // 选原生/解包配方 → 移除配置页中所有产出该物品的旧配方（取代旧替代）。
+    let selected = paramsRef.value?.selectedRecipes ?? []
+    let configChanged = false
+    for (const [itemClass, recipeClass] of overrides) {
+      const recipe = findRecipeByClass(recipeClass)
+      const filtered = selected.filter((r) => {
+        const rec = findRecipeByClass(r)
+        return !(rec && rec.products.some((p) => p.itemClass === itemClass))
+      })
+      if (filtered.length !== selected.length) configChanged = true
+      selected = filtered
+      if (recipe?.isAlternate && !selected.includes(recipeClass)) {
+        selected = [...selected, recipeClass]
+        configChanged = true
+      }
+    }
+    if (configChanged && paramsRef.value) paramsRef.value.selectedRecipes = selected
+
+    debounceRun()
+  },
+  { deep: true },
 )
 
 /** 从 dataStore 获取所有物品，转为 a-select 所需格式 */
@@ -292,6 +364,9 @@ const recipeValueOf = (itemClass: string): string | undefined => {
 
 /** 下拉切换配方：写入产出级选择，并同步到配置页已选替代配方列表 */
 function changeOutputRecipe(itemClass: string, recipeClass: string): void {
+  // 产出页下拉显式切换 → 取代弹窗对该物品的覆盖（用户最近操作优先），
+  // 否则 recipeOverrides 在 buildAlternativeMap 中最高优先会吞掉本次选择
+  uiStore.clearRecipeOverride(itemClass)
   outputRecipes.value = new Map(outputRecipes.value).set(itemClass, recipeClass)
   const recipe = findRecipeByClass(recipeClass)
 
@@ -332,6 +407,10 @@ function addItem() {
 const availableItems = computed(() =>
   allItems.value.filter((item) => !currentList.value.includes(item.value))
 )
+
+defineExpose({
+  restoreDefaultRecipe,
+})
 </script>
 
 <template>

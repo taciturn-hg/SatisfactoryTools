@@ -1,9 +1,17 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { useProductionPlan } from '@/composables/useProductionPlan'
 import RightPanel from '@/components/right-panel/RightPanel.vue'
 import FlowChart from '@/components/flow-chart/FlowChart.vue'
+import NodeDetailModal from '@/components/modals/NodeDetailModal.vue'
 
 const { flowNodes, flowEdges, totalPower, onGraphReady, onReset } = useProductionPlan()
+
+const rightPanelRef = ref<InstanceType<typeof RightPanel> | null>(null)
+
+function onRestoreDefault(itemClass: string): void {
+  rightPanelRef.value?.restoreDefaultRecipe(itemClass)
+}
 </script>
 
 <template>
@@ -16,7 +24,8 @@ const { flowNodes, flowEdges, totalPower, onGraphReady, onReset } = useProductio
         <span class="power-info">⚡ {{ totalPower }} MW</span>
       </div>
     </div>
-    <RightPanel @graph-ready="onGraphReady" @reset="onReset" />
+    <RightPanel ref="rightPanelRef" @graph-ready="onGraphReady" @reset="onReset" />
+    <NodeDetailModal @restore-default="onRestoreDefault" />
   </div>
 </template>
 

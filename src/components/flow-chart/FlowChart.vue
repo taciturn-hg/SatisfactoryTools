@@ -4,12 +4,24 @@ import { MiniMap } from '@vue-flow/minimap'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 import FlowNode from '@/components/flow-chart/FlowNode.vue'
-import type { Node, Edge } from '@vue-flow/core'
+import { useUiStore } from '@/stores/uiStore'
+import type { Node, Edge, NodeMouseEvent } from '@vue-flow/core'
+import type { ProductionNode } from '@/types'
 
 defineProps<{
   nodes?: Node[]
   edges?: Edge[]
 }>()
+
+const uiStore = useUiStore()
+
+/** 点击节点 → 打开详情弹窗（改配方） */
+function onNodeClick({ node }: NodeMouseEvent) {
+  const data = node.data as ProductionNode | undefined
+  if (!data) return
+  uiStore.selectNode(data)
+  uiStore.isNodeDetailModalOpen = true
+}
 </script>
 
 <template>
@@ -21,6 +33,7 @@ defineProps<{
       :min-zoom="0.1"
       :max-zoom="3"
       fit-view-on-init
+      @node-click="onNodeClick"
     >
       <MiniMap position="bottom-right" />
       <template #node-production-node="props">
