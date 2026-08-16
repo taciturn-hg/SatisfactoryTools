@@ -1438,9 +1438,10 @@ function getNodePerMachineRate(
  *
  * 分配分三步：
  *  第 1 步：资源采集器（叶子节点）— 堆 250%，不省碎片
- *  第 2 步：降频节点 — 给刚好消除降频的最小碎片数
- *  第 3 步：所有非叶子节点合流（降频修复后的 + 无降频的），按 rawCount 降序，
- *           再次参与分配（step 3 覆盖 step 2 的结果，合并为一次完整的 calcNodeClocks）
+ *  第 2 步：晶体节点 — 碎片边际收益 ×2，优先顶满
+ *  第 3 步：其余非叶子节点合流，按 rawCount 降序在同一碎片池内分配，
+ *           降频节点优先给「消除降频的最小碎片数」（跳过不值得的区间），
+ *           每次分配真实扣减 remaining，总消耗不超出预算。
  */
 function applyOverclock(
   graph: ProductionGraph,
@@ -1499,22 +1500,18 @@ function applyOverclock(
     remaining -= shardsUsed
   }
 
-  // ··· 第 2 轮：降频节点，消除降频 ···
-  // 算出消除每个降频节点的最小碎片数，按 rawCount 降序分配
-  // 跳过以下区间：0~25%（降频成本低不值得）、50~75%（投入回报低不值得）
-  // 注意：Phase 2 只设置 clocks 但不消耗 remaining，Phase 3 才是最终分配者，
-  // 避免 Phase 2 消耗的碎片在 Phase 3 中被重复计入而浪费。
-  nonLeafWithFraction.sort((a, b) => b.rawCount - a.rawCount)
-  for (const d of nonLeafWithFraction) {
-    if (remaining <= 0) break
-    const fraction = d.rawCount % 1
-    if (fraction <= 0.25 || (fraction > 0.50 && fraction <= 0.75)) continue
-    const minShards = Math.ceil(2 * fraction)
-    if (minShards > remaining) continue
-    const { clocks } = calcNodeClocks(d.rawCount, minShards, false)
-    d.node.machineClocks = clocks
-    d.node.machineCount = clocks.length
-  }
+  // ··· 第 2 轮：标记「不值得消除降频」的节点（跳过区间：0~25% 降频成本低不值得、
+  //  50~75% 投入回报低不值得）。碎片分配统一在 Phase 4 完成：若 Phase 2 先消耗
+  //  remaining、Phase 4 再对同一节点重算会重复扣减；若不扣减则 Phase 4 的预算与
+  //  实际分配不符，总碎片消耗会超出 totalShards（如设置 2 碎片却实际分配 4）。
+  const fractionSkip = new Set(
+    nonLeafWithFraction
+      .filter(d => {
+        const fraction = d.rawCount % 1
+        return fraction <= 0.25 || (fraction > 0.5 && fraction <= 0.75)
+      })
+      .map(d => d.node),
+  )
 
   // ··· 第 3 轮：晶体节点优先（碎片边际收益 ×2）···
   // 处理中 syncNodeInputs 会级联缩减上游索莫节点（若其待处理，rate 已变），
@@ -1552,11 +1549,15 @@ function applyOverclock(
   }
 
   // ··· 第 4 轮：其余非叶子节点合流，分配剩余碎片 ···
+  // 降频消除与整数节点超频在同一个 remaining 池子里按 rawCount 降序竞争，
+  // 每次分配都真实扣减预算，保证总碎片消耗不超出 totalShards。
   const allNonLeaf = [...nonLeafWithFraction, ...nonLeafNoFraction]
   allNonLeaf.sort((a, b) => b.rawCount - a.rawCount)
   for (const d of allNonLeaf) {
     if (remaining <= 0) break
-    const { clocks, shardsUsed } = calcNodeClocks(d.rawCount, remaining, false)
+    // 不值得消除降频的节点：预算归零，走无碎片默认降频（不花碎片）
+    const budget = fractionSkip.has(d.node) ? 0 : remaining
+    const { clocks, shardsUsed } = calcNodeClocks(d.rawCount, budget, false)
     d.node.machineClocks = clocks
     d.node.machineCount = clocks.length
     remaining -= shardsUsed
